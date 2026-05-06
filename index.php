@@ -6,7 +6,9 @@
 // ============================================================
 
 $IMAGE_DIR  = __DIR__ . '/images/';
+$CACHE_FILE = __DIR__ . '/.photomap-cache.json';
 $EXTENSIONS = ['jpg', 'jpeg', 'webp', 'png', 'heic', 'tiff', 'tif'];
+$CACHE_VER  = 2;
 
 // ── GPS-Helfer ───────────────────────────────────────────────
 
@@ -26,18 +28,8 @@ function dms_to_decimal(array $dms, string $ref): float {
     return (strtoupper($ref) === 'S' || strtoupper($ref) === 'W') ? -$decimal : $decimal;
 }
 
-function get_gps_from_exif(string $path): ?array {
-    // Native PHP EXIF (JPEG / TIFF)
-    if (function_exists('exif_read_data')) {
-        $exif = @exif_read_data($path, 'GPS', true);
-        if ($exif && isset($exif['GPS']['GPSLatitude'], $exif['GPS']['GPSLongitude'])) {
-            $lat = dms_to_decimal($exif['GPS']['GPSLatitude'],  $exif['GPS']['GPSLatitudeRef']  ?? 'N');
-            $lng = dms_to_decimal($exif['GPS']['GPSLongitude'], $exif['GPS']['GPSLongitudeRef'] ?? 'E');
-            if ($lat != 0 || $lng != 0) return ['lat' => $lat, 'lng' => $lng];
-        }
-    }
-
-    // Fallback: raw-byte TIFF/IFD parser — handles WebP EXIF chunks too
+// Reads GPS from raw bytes — fallback for WebP / non-JPEG formats.
+function gps_from_raw(string $path): ?array {
     $raw = file_get_contents($path, false, null, 0, 65536);
     if ($raw === false) return null;
     $exif_pos = strpos($raw, "Exif\x00\x00");
@@ -65,7 +57,7 @@ function get_gps_from_exif(string $path): ?array {
 
     $gps_count = $read16($gps_ifd_offset);
     if ($gps_count > 64) return null;
-    $gps       = [];
+    $gps = [];
     for ($i = 0; $i < $gps_count; $i++) {
         $entry      = $gps_ifd_offset + 2 + $i * 12;
         $tag        = $read16($entry);
@@ -73,16 +65,16 @@ function get_gps_from_exif(string $path): ?array {
         $count      = $read32($entry + 4);
         $val_offset = $entry + 8;
 
-        if ($type === 2) { // ASCII
+        if ($type === 2) {
             $gps[$tag] = $count > 4
                 ? trim(substr($raw, $tiff_start + $read32($val_offset), $count))
                 : trim(substr($raw, $tiff_start + $val_offset, min($count, 4)));
-        } elseif ($type === 5) { // RATIONAL
-            $ptr       = $read32($val_offset);
+        } elseif ($type === 5) {
+            $ptr = $read32($val_offset);
             $rationals = [];
             for ($r = 0; $r < min($count, 3); $r++) {
-                $num         = $read32($ptr + $r * 8);
-                $den         = $read32($ptr + $r * 8 + 4);
+                $num = $read32($ptr + $r * 8);
+                $den = $read32($ptr + $r * 8 + 4);
                 $rationals[] = $den ? $num / $den : 0;
             }
             $gps[$tag] = $rationals;
@@ -99,19 +91,51 @@ function get_gps_from_exif(string $path): ?array {
     return null;
 }
 
-function get_date_taken(string $path): string {
+// Single EXIF read that returns both GPS and date.
+function read_photo_meta(string $path): array {
+    $gps  = null;
+    $date = null;
+
     if (function_exists('exif_read_data')) {
-        $exif = @exif_read_data($path);
+        $exif = @exif_read_data($path, null, true);
         if ($exif) {
-            $dt = $exif['DateTimeOriginal'] ?? $exif['DateTime'] ?? null;
-            if ($dt) return $dt;
+            $date = $exif['EXIF']['DateTimeOriginal']
+                 ?? $exif['IFD0']['DateTime']
+                 ?? null;
+
+            $g = $exif['GPS'] ?? [];
+            if (isset($g['GPSLatitude'], $g['GPSLongitude'])) {
+                $lat = dms_to_decimal($g['GPSLatitude'],  $g['GPSLatitudeRef']  ?? 'N');
+                $lng = dms_to_decimal($g['GPSLongitude'], $g['GPSLongitudeRef'] ?? 'E');
+                if ($lat != 0 || $lng != 0) $gps = ['lat' => $lat, 'lng' => $lng];
+            }
         }
     }
-    if (preg_match('/(\d{4})(\d{2})(\d{2})/', basename($path), $m)) {
-        return "{$m[1]}-{$m[2]}-{$m[3]}";
+
+    if ($gps  === null) $gps  = gps_from_raw($path);
+
+    if ($date === null) {
+        if (preg_match('/(\d{4})(\d{2})(\d{2})/', basename($path), $m))
+            $date = "{$m[1]}-{$m[2]}-{$m[3]}";
+        else {
+            $mtime = filemtime($path);
+            $date  = $mtime !== false ? date('Y-m-d', $mtime) : '—';
+        }
     }
-    $mtime = filemtime($path);
-    return $mtime !== false ? date('Y-m-d', $mtime) : '—';
+
+    return ['gps' => $gps, 'date' => $date];
+}
+
+// ── Cache ────────────────────────────────────────────────────
+
+function load_cache(string $path, int $ver): array {
+    if (!is_file($path)) return ['v' => $ver, 'f' => []];
+    $data = @json_decode(@file_get_contents($path), true);
+    return (is_array($data) && ($data['v'] ?? 0) === $ver) ? $data : ['v' => $ver, 'f' => []];
+}
+
+function save_cache(string $path, array $cache): void {
+    @file_put_contents($path, json_encode($cache, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
 }
 
 // ── Fotos einlesen ───────────────────────────────────────────
@@ -120,24 +144,31 @@ $photos_with_gps    = [];
 $photos_without_gps = [];
 
 if (is_dir($IMAGE_DIR)) {
+    $cache       = load_cache($CACHE_FILE, $CACHE_VER);
+    $cache_dirty = false;
+
     $files = scandir($IMAGE_DIR);
     usort($files, 'strcasecmp');
     foreach ($files as $file) {
         $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
         if (!in_array($ext, $EXTENSIONS)) continue;
 
-        $full_path    = $IMAGE_DIR . $file;
-        $web_path     = 'images/' . rawurlencode($file);
-        $gps          = get_gps_from_exif($full_path);
-        $date         = get_date_taken($full_path);
-        $name_display = ucwords(str_replace(['_', '-'], ' ', pathinfo($file, PATHINFO_FILENAME)));
+        $full_path = $IMAGE_DIR . $file;
+        $mtime     = filemtime($full_path);
 
-        $info = [
-            'file' => $file,
-            'path' => $web_path,
-            'name' => $name_display,
-            'date' => $date,
-        ];
+        $entry = $cache['f'][$file] ?? null;
+        if ($entry && ($entry['m'] ?? 0) === $mtime) {
+            $gps  = $entry['g'] ?? null;
+            $date = $entry['d'] ?? '—';
+        } else {
+            ['gps' => $gps, 'date' => $date] = read_photo_meta($full_path);
+            $cache['f'][$file] = ['m' => $mtime, 'g' => $gps, 'd' => $date];
+            $cache_dirty = true;
+        }
+
+        $web_path     = 'images/' . rawurlencode($file);
+        $name_display = ucwords(str_replace(['_', '-'], ' ', pathinfo($file, PATHINFO_FILENAME)));
+        $info = ['file' => $file, 'path' => $web_path, 'name' => $name_display, 'date' => $date];
 
         if ($gps) {
             $info['lat'] = round($gps['lat'], 7);
@@ -147,6 +178,8 @@ if (is_dir($IMAGE_DIR)) {
             $photos_without_gps[] = $info;
         }
     }
+
+    if ($cache_dirty) save_cache($CACHE_FILE, $cache);
 }
 
 $total       = count($photos_with_gps) + count($photos_without_gps);
