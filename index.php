@@ -556,11 +556,22 @@ const $lbThumbs= document.getElementById('lbThumbs');
 
 const getList = kind => kind === 'gps' ? PHOTOS : NO_GPS;
 
-function buildThumbs(kind) {
-  $lbThumbs.innerHTML = getList(kind).map((p, i) =>
-    `<div class="t" data-i="${i}" style="background-image:url('${p.path}')"></div>`).join('');
-  $lbThumbs.querySelectorAll('.t').forEach(t =>
-    t.addEventListener('click', () => showAt(lbCurrent.list, +t.dataset.i)));
+const THUMB_WINDOW = 9;
+
+function renderThumbs(kind, activeIdx) {
+  const list  = getList(kind);
+  const half  = Math.floor(THUMB_WINDOW / 2);
+  const start = Math.max(0, Math.min(activeIdx - half, list.length - THUMB_WINDOW));
+  const end   = Math.min(list.length, start + THUMB_WINDOW);
+  $lbThumbs.innerHTML = '';
+  for (let i = start; i < end; i++) {
+    const div = document.createElement('div');
+    div.className = 't' + (i === activeIdx ? ' is-active' : '');
+    div.dataset.i = i;
+    div.style.backgroundImage = `url('${list[i].path}')`;
+    div.addEventListener('click', () => showAt(lbCurrent.list, i));
+    $lbThumbs.appendChild(div);
+  }
 }
 
 function showAt(kind, i) {
@@ -577,12 +588,11 @@ function showAt(kind, i) {
   document.querySelectorAll('.photo-marker').forEach(el =>
     el.classList.toggle('is-active', kind === 'gps' && +el.dataset.idx === i));
   scrollSidebarTo(kind, i);
-  $lbThumbs.querySelectorAll('.t').forEach(t => t.classList.toggle('is-active', +t.dataset.i === i));
+  renderThumbs(kind, i);
 }
 
 function openLightbox(i, isNoGps = false) {
   const kind = isNoGps ? 'nogps' : 'gps';
-  buildThumbs(kind);
   $lb.style.display = 'flex';
   requestAnimationFrame(() => $lb.classList.add('is-open'));
   $lb.setAttribute('aria-hidden', 'false');
