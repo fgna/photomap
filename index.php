@@ -296,27 +296,16 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 
 .lightbox{position:fixed;inset:0;z-index:1000;background:color-mix(in oklab, var(--ink) 78%, transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:none;opacity:0;transition:opacity .3s;}
 .lightbox.is-open{opacity:1}
-.lightbox .frame{margin:auto;width:min(1200px, 92vw);height:min(720px, 88vh);background:var(--paper);border-radius:18px;box-shadow:var(--shadow-3);display:grid;grid-template-columns:1fr 320px;overflow:hidden;transform:scale(.97);transition:transform .35s cubic-bezier(.2,.8,.2,1);}
+.lightbox .frame{margin:auto;width:min(1200px, 92vw);height:min(800px, 90vh);background:var(--paper);border-radius:18px;box-shadow:var(--shadow-3);position:relative;overflow:hidden;transform:scale(.97);transition:transform .35s cubic-bezier(.2,.8,.2,1);}
 .lightbox.is-open .frame{transform:scale(1)}
-.lb-media{position:relative;background:var(--ink-50);display:flex;align-items:center;justify-content:center;overflow:hidden;}
-.lb-media .image{position:absolute;inset:0;background-size:cover;background-position:center;}
-.lb-media .image::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg, transparent 60%, rgba(20,22,40,.18) 100%);}
+.lb-media{position:absolute;inset:0;background:var(--ink-50);display:flex;align-items:center;justify-content:center;overflow:hidden;}
+.lb-media .image{position:absolute;inset:0;background-size:contain;background-position:center;background-repeat:no-repeat;background-color:var(--ink-50);}
 .lb-nav{position:absolute;top:50%;transform:translateY(-50%);width:48px;height:48px;border-radius:999px;background:color-mix(in oklab, var(--paper) 90%, transparent);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;color:var(--ink);transition:transform .2s, background .2s;z-index:2;}
 .lb-nav:hover{background:var(--paper);transform:translateY(-50%) scale(1.05)}
 .lb-nav.prev{left:24px}.lb-nav.next{right:24px}
 .lb-nav svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.3}
 .lb-counter{position:absolute;bottom:24px;left:24px;z-index:2;font-family:var(--mono);font-size:11px;color:var(--paper);background:color-mix(in oklab, var(--ink) 60%, transparent);backdrop-filter:blur(6px);padding:6px 12px;border-radius:999px;letter-spacing:0.1em;}
 .lb-counter .now{font-family:var(--serif);font-style:italic;font-size:16px;line-height:1;vertical-align:-1px;margin-right:4px}
-.lb-info{display:flex;flex-direction:column;padding:32px 28px 28px;background:var(--paper);border-left:1px solid var(--ink-100);}
-.lb-info .eyebrow{font-size:10px;color:var(--ink-600);text-transform:uppercase;letter-spacing:0.14em;margin-bottom:14px;display:flex;align-items:center;gap:8px;}
-.lb-info .eyebrow .dot{width:6px;height:6px;border-radius:99px;background:var(--accent);display:inline-block}
-.lb-info h2{font-family:var(--serif);font-weight:400;font-size:38px;line-height:1.05;letter-spacing:-0.015em;margin:0 0 4px;text-wrap:pretty;}
-.lb-info h2 em{font-style:italic;color:var(--accent)}
-.lb-info .date{font-family:var(--mono);font-size:12px;color:var(--ink-600);margin-bottom:auto;padding-bottom:24px;}
-.lb-meta-list{border-top:1px solid var(--ink-100);padding-top:16px;display:grid;gap:10px;}
-.lb-meta-list dl{display:flex;justify-content:space-between;gap:16px;margin:0}
-.lb-meta-list dt{font-size:10px;color:var(--ink-600);text-transform:uppercase;letter-spacing:0.12em;}
-.lb-meta-list dd{margin:0;font-family:var(--mono);font-size:12px;color:var(--ink);text-align:right;}
 .lb-close{position:absolute;top:18px;right:18px;z-index:3;width:36px;height:36px;border-radius:10px;background:color-mix(in oklab, var(--paper) 90%, transparent);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;color:var(--ink);}
 .lb-close:hover{background:var(--paper)}
 .lb-close svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5}
@@ -340,9 +329,6 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 @media (max-width: 720px){
   .sidebar{top:auto;right:12px;left:12px;bottom:12px;width:auto;height:46vh;border-radius:18px}
   .legend-chip{display:none}
-  .lightbox .frame{grid-template-columns:1fr;grid-template-rows:1fr auto}
-  .lb-info{border-left:0;border-top:1px solid var(--ink-100);padding:22px 22px 24px}
-  .lb-info h2{font-size:26px}
 }
 </style>
 </head>
@@ -414,18 +400,6 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
       </button>
       <div class="lb-counter"><span class="now" id="lbNow">1</span>/ <span id="lbTotal">1</span></div>
       <div class="lb-thumbs" id="lbThumbs"></div>
-    </div>
-    <div class="lb-info">
-      <div class="eyebrow"><span class="dot"></span><span id="lbBadge">Mit GPS</span></div>
-      <h2 id="lbTitle">—</h2>
-      <div class="date" id="lbDate">—</div>
-      <div class="lb-meta-list">
-        <dl><dt>Ort</dt><dd id="lbPlace">—</dd></dl>
-        <dl><dt>Datei</dt><dd id="lbFile">—</dd></dl>
-        <dl><dt>Latitude</dt><dd id="lbLat">—</dd></dl>
-        <dl><dt>Longitude</dt><dd id="lbLng">—</dd></dl>
-        <dl><dt>Index</dt><dd id="lbIdx">—</dd></dl>
-      </div>
     </div>
   </div>
 </div>
@@ -576,45 +550,9 @@ document.getElementById('sidebarOpen').addEventListener('click', () => {
 // ── Lightbox ──────────────────────────────────────────────────
 const $lb      = document.getElementById('lightbox');
 const $lbImage = document.getElementById('lbImage');
-const $lbTitle = document.getElementById('lbTitle');
-const $lbDate  = document.getElementById('lbDate');
-const $lbFile  = document.getElementById('lbFile');
-const $lbLat   = document.getElementById('lbLat');
-const $lbLng   = document.getElementById('lbLng');
 const $lbNow   = document.getElementById('lbNow');
 const $lbTotal = document.getElementById('lbTotal');
-const $lbBadge = document.getElementById('lbBadge');
-const $lbIdx   = document.getElementById('lbIdx');
 const $lbThumbs= document.getElementById('lbThumbs');
-const $lbPlace = document.getElementById('lbPlace');
-
-// ── Reverse geocoding (Nominatim) ─────────────────────────────
-const PLACE_CACHE_KEY = 'photomap_places_v1';
-function placeCache() {
-  try { return JSON.parse(localStorage.getItem(PLACE_CACHE_KEY) || '{}'); } catch { return {}; }
-}
-function savePlaceCache(c) {
-  try { localStorage.setItem(PLACE_CACHE_KEY, JSON.stringify(c)); } catch {}
-}
-
-async function fetchPlaceName(lat, lng) {
-  const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
-  const cache = placeCache();
-  if (key in cache) return cache[key];
-
-  try {
-    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=17&addressdetails=1`;
-    const res = await fetch(url, { headers: { 'Accept-Language': 'de', 'User-Agent': 'PhotoMap/1.0' } });
-    if (!res.ok) throw new Error(res.status);
-    const d = await res.json();
-    const a = d.address || {};
-    const name = d.name || a.tourism || a.historic || a.amenity || a.building ||
-                 a.road || a.neighbourhood || a.suburb || a.city_district || null;
-    cache[key] = name;
-    savePlaceCache(cache);
-    return name;
-  } catch { return null; }
-}
 
 const getList = kind => kind === 'gps' ? PHOTOS : NO_GPS;
 
@@ -633,24 +571,8 @@ function showAt(kind, i) {
   const p = list[i];
 
   $lbImage.style.backgroundImage = `url('${p.path}')`;
-  $lbTitle.textContent = p.name;
-  $lbDate.textContent  = fmtDate(p.date);
-  $lbFile.textContent  = p.file;
   $lbNow.textContent   = (i+1).toString().padStart(2,'0');
   $lbTotal.textContent = list.length.toString().padStart(2,'0');
-  $lbIdx.textContent   = `${(i+1).toString().padStart(2,'0')} / ${list.length.toString().padStart(2,'0')}`;
-  $lbBadge.textContent = kind === 'gps' ? 'Mit GPS' : 'Ohne GPS';
-  $lbLat.textContent   = kind === 'gps' ? p.lat.toFixed(5) + '°' : '—';
-  $lbLng.textContent   = kind === 'gps' ? p.lng.toFixed(5) + '°' : '—';
-  if (kind === 'gps') {
-    $lbPlace.textContent = '…';
-    fetchPlaceName(p.lat, p.lng).then(name => {
-      if (lbCurrent.list === kind && lbCurrent.i === i)
-        $lbPlace.textContent = name || '—';
-    });
-  } else {
-    $lbPlace.textContent = '—';
-  }
 
   document.querySelectorAll('.photo-marker').forEach(el =>
     el.classList.toggle('is-active', kind === 'gps' && +el.dataset.idx === i));
