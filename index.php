@@ -374,6 +374,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
       <h2 id="lbTitle">—</h2>
       <div class="date" id="lbDate">—</div>
       <div class="lb-meta-list">
+        <dl><dt>Ort</dt><dd id="lbPlace">—</dd></dl>
         <dl><dt>Datei</dt><dd id="lbFile">—</dd></dl>
         <dl><dt>Latitude</dt><dd id="lbLat">—</dd></dl>
         <dl><dt>Longitude</dt><dd id="lbLng">—</dd></dl>
@@ -486,6 +487,35 @@ const $lbTotal = document.getElementById('lbTotal');
 const $lbBadge = document.getElementById('lbBadge');
 const $lbIdx   = document.getElementById('lbIdx');
 const $lbThumbs= document.getElementById('lbThumbs');
+const $lbPlace = document.getElementById('lbPlace');
+
+// ── Reverse geocoding (Nominatim) ─────────────────────────────
+const PLACE_CACHE_KEY = 'photomap_places_v1';
+function placeCache() {
+  try { return JSON.parse(localStorage.getItem(PLACE_CACHE_KEY) || '{}'); } catch { return {}; }
+}
+function savePlaceCache(c) {
+  try { localStorage.setItem(PLACE_CACHE_KEY, JSON.stringify(c)); } catch {}
+}
+
+async function fetchPlaceName(lat, lng) {
+  const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
+  const cache = placeCache();
+  if (key in cache) return cache[key];
+
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=17&addressdetails=1`;
+    const res = await fetch(url, { headers: { 'Accept-Language': 'de', 'User-Agent': 'PhotoMap/1.0' } });
+    if (!res.ok) throw new Error(res.status);
+    const d = await res.json();
+    const a = d.address || {};
+    const name = d.name || a.tourism || a.historic || a.amenity || a.building ||
+                 a.road || a.neighbourhood || a.suburb || a.city_district || null;
+    cache[key] = name;
+    savePlaceCache(cache);
+    return name;
+  } catch { return null; }
+}
 
 let lbCurrent = { list: 'gps', i: 0 };
 const getList = kind => kind === 'gps' ? PHOTOS : NO_GPS;
@@ -514,6 +544,15 @@ function showAt(kind, i) {
   $lbBadge.textContent = kind === 'gps' ? 'Mit GPS' : 'Ohne GPS';
   $lbLat.textContent   = kind === 'gps' ? p.lat.toFixed(5) + '°' : '—';
   $lbLng.textContent   = kind === 'gps' ? p.lng.toFixed(5) + '°' : '—';
+  if (kind === 'gps') {
+    $lbPlace.textContent = '…';
+    fetchPlaceName(p.lat, p.lng).then(name => {
+      if (lbCurrent.list === kind && lbCurrent.i === i)
+        $lbPlace.textContent = name || '—';
+    });
+  } else {
+    $lbPlace.textContent = '—';
+  }
 
   document.querySelectorAll('.photo-marker').forEach(el =>
     el.classList.toggle('is-active', kind === 'gps' && +el.dataset.idx === i));
