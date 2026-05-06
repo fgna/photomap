@@ -30,7 +30,8 @@ function get_gps_from_exif(string $path): ?array {
     }
 
     // Fallback: raw-byte TIFF/IFD parser — handles WebP EXIF chunks too
-    $raw      = file_get_contents($path, false, null, 0, 65536);
+    $raw = file_get_contents($path, false, null, 0, 65536);
+    if ($raw === false) return null;
     $exif_pos = strpos($raw, "Exif\x00\x00");
     if ($exif_pos === false) $exif_pos = strpos($raw, "EXIF\x00\x00");
     if ($exif_pos === false) return null;
@@ -45,6 +46,7 @@ function get_gps_from_exif(string $path): ?array {
 
     $ifd0_offset    = $read32(4);
     $ifd0_count     = $read16($ifd0_offset);
+    if ($ifd0_count > 256) return null;
     $gps_ifd_offset = null;
 
     for ($i = 0; $i < $ifd0_count; $i++) {
@@ -54,6 +56,7 @@ function get_gps_from_exif(string $path): ?array {
     if ($gps_ifd_offset === null) return null;
 
     $gps_count = $read16($gps_ifd_offset);
+    if ($gps_count > 64) return null;
     $gps       = [];
     for ($i = 0; $i < $gps_count; $i++) {
         $entry      = $gps_ifd_offset + 2 + $i * 12;
@@ -67,7 +70,7 @@ function get_gps_from_exif(string $path): ?array {
                 ? trim(substr($raw, $tiff_start + $read32($val_offset), $count))
                 : trim(substr($raw, $tiff_start + $val_offset, min($count, 4)));
         } elseif ($type === 5) { // RATIONAL
-            $ptr       = ($count * 8 <= 4) ? $val_offset : $read32($val_offset);
+            $ptr       = $read32($val_offset);
             $rationals = [];
             for ($r = 0; $r < min($count, 3); $r++) {
                 $num         = $read32($ptr + $r * 8);
@@ -99,7 +102,8 @@ function get_date_taken(string $path): string {
     if (preg_match('/(\d{4})(\d{2})(\d{2})/', basename($path), $m)) {
         return "{$m[1]}-{$m[2]}-{$m[3]}";
     }
-    return date('Y-m-d', filemtime($path));
+    $mtime = filemtime($path);
+    return $mtime !== false ? date('Y-m-d', $mtime) : '—';
 }
 
 // ── Fotos einlesen ───────────────────────────────────────────
@@ -109,7 +113,7 @@ $photos_without_gps = [];
 
 if (is_dir($IMAGE_DIR)) {
     $files = scandir($IMAGE_DIR);
-    sort($files);
+    usort($files, 'strcasecmp');
     foreach ($files as $file) {
         $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
         if (!in_array($ext, $EXTENSIONS)) continue;
@@ -141,8 +145,8 @@ $total       = count($photos_with_gps) + count($photos_without_gps);
 $center_lat  = 37.1773;
 $center_lng  = -3.5986;
 
-$photos_json = json_encode($photos_with_gps,    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-$no_gps_json = json_encode($photos_without_gps, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+$photos_json = json_encode($photos_with_gps,    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG);
+$no_gps_json = json_encode($photos_without_gps, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG);
 ?>
 <!doctype html>
 <html lang="de">
@@ -245,7 +249,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 .photo-row .meta .gps-dot{color:var(--accent)}
 
 .lightbox{position:fixed;inset:0;z-index:1000;background:color-mix(in oklab, var(--ink) 78%, transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:none;opacity:0;transition:opacity .3s;}
-.lightbox.is-open{display:flex;opacity:1}
+.lightbox.is-open{opacity:1}
 .lightbox .frame{margin:auto;width:min(1200px, 92vw);height:min(720px, 88vh);background:var(--paper);border-radius:18px;box-shadow:var(--shadow-3);display:grid;grid-template-columns:1fr 320px;overflow:hidden;transform:scale(.97);transition:transform .35s cubic-bezier(.2,.8,.2,1);}
 .lightbox.is-open .frame{transform:scale(1)}
 .lb-media{position:relative;background:var(--ink-50);display:flex;align-items:center;justify-content:center;overflow:hidden;}
@@ -411,6 +415,8 @@ const markers = PHOTOS.map((p, i) => {
 // ── Sidebar ───────────────────────────────────────────────────
 const $body = document.getElementById('sidebarBody');
 
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
 function fmtDate(s) {
   if (!s) return '—';
   const d = new Date(s.replace(' ', 'T'));
@@ -422,7 +428,7 @@ function renderSidebar() {
     <div class="photo-row" data-kind="gps" data-idx="${i}">
       <div class="thumb" style="background-image:url('${p.path}')"></div>
       <div class="info">
-        <div class="name">${p.name}</div>
+        <div class="name">${esc(p.name)}</div>
         <div class="meta"><span><span class="gps-dot">◉</span> ${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span></div>
       </div>
     </div>`).join('');
@@ -431,7 +437,7 @@ function renderSidebar() {
     <div class="photo-row no-gps" data-kind="nogps" data-idx="${i}">
       <div class="thumb" style="background-image:url('${p.path}')"></div>
       <div class="info">
-        <div class="name">${p.name}</div>
+        <div class="name">${esc(p.name)}</div>
         <div class="meta"><span>${fmtDate(p.date)}</span><span>kein GPS</span></div>
       </div>
     </div>`).join('');
@@ -525,7 +531,8 @@ function showAt(kind, i) {
 function openLightbox(i, isNoGps = false) {
   const kind = isNoGps ? 'nogps' : 'gps';
   buildThumbs(kind);
-  $lb.classList.add('is-open');
+  $lb.style.display = 'flex';
+  requestAnimationFrame(() => $lb.classList.add('is-open'));
   $lb.setAttribute('aria-hidden', 'false');
   showAt(kind, i);
 }
@@ -533,6 +540,7 @@ function openLightbox(i, isNoGps = false) {
 function closeLightbox() {
   $lb.classList.remove('is-open');
   $lb.setAttribute('aria-hidden', 'true');
+  $lb.addEventListener('transitionend', () => { $lb.style.display = ''; }, { once: true });
   document.querySelectorAll('.photo-marker, .photo-row').forEach(el => el.classList.remove('is-active'));
 }
 
