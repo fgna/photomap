@@ -1,0 +1,9 @@
+{
+    "name": "fgna/photomap",
+    "description": "Single-file PHP photo map with GPS EXIF extraction and Leaflet rendering",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.0"
+    }
+}
