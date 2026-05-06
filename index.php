@@ -10,11 +10,19 @@ $EXTENSIONS = ['jpg', 'jpeg', 'webp', 'png', 'heic', 'tiff', 'tif'];
 
 // ── GPS-Helfer ───────────────────────────────────────────────
 
+function rational_to_float(mixed $v): float {
+    if (is_array($v))  return $v[1] ? (float)$v[0] / (float)$v[1] : 0.0;
+    if (is_string($v) && ($slash = strpos($v, '/')) !== false) {
+        $den = (float)substr($v, $slash + 1);
+        return $den ? (float)substr($v, 0, $slash) / $den : 0.0;
+    }
+    return (float)$v;
+}
+
 function dms_to_decimal(array $dms, string $ref): float {
-    $deg     = is_array($dms[0]) ? $dms[0][0] / $dms[0][1] : (float)$dms[0];
-    $min     = is_array($dms[1]) ? $dms[1][0] / $dms[1][1] : (float)$dms[1];
-    $sec     = is_array($dms[2]) ? $dms[2][0] / $dms[2][1] : (float)$dms[2];
-    $decimal = $deg + $min / 60 + $sec / 3600;
+    $decimal = rational_to_float($dms[0])
+             + rational_to_float($dms[1]) / 60
+             + rational_to_float($dms[2]) / 3600;
     return (strtoupper($ref) === 'S' || strtoupper($ref) === 'W') ? -$decimal : $decimal;
 }
 
