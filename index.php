@@ -166,6 +166,9 @@ $no_gps_json = json_encode($photos_without_gps, JSON_UNESCAPED_UNICODE | JSON_UN
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
         crossorigin=""></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" crossorigin="">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" crossorigin="">
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" crossorigin=""></script>
 <style>
 :root{
   --ink:    oklch(0.18 0.02 250);
@@ -216,6 +219,8 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 .photo-marker.is-active::before{content:"";position:absolute;inset:-10px;border-radius:999px;border:1px solid var(--accent);animation:ring 1.6s ease-out infinite;pointer-events:none;}
 @keyframes ring{0%{transform:scale(.9);opacity:.8}100%{transform:scale(1.6);opacity:0}}
 .leaflet-marker-icon.photo-marker-wrap{background:transparent;border:0}
+.photo-cluster{border-radius:999px;background:color-mix(in oklab, var(--accent) 20%, var(--paper));padding:3px;box-shadow:var(--shadow-2);cursor:pointer;}
+.photo-cluster .ci{width:100%;height:100%;border-radius:999px;background:var(--accent);color:var(--paper);display:flex;align-items:center;justify-content:center;font-family:var(--serif);font-style:italic;font-size:16px;}
 
 .sidebar{position:fixed;top:88px;right:24px;bottom:24px;width:340px;z-index:500;background:color-mix(in oklab, var(--paper) 96%, transparent);backdrop-filter:blur(12px) saturate(1.1);-webkit-backdrop-filter:blur(12px) saturate(1.1);border:1px solid var(--ink-100);border-radius:18px;box-shadow:var(--shadow-2);display:flex;flex-direction:column;transition:transform .35s cubic-bezier(.2,.8,.2,1), opacity .25s;overflow:hidden;}
 .sidebar.is-collapsed{transform:translateX(calc(100% + 32px));opacity:0;pointer-events:none}
@@ -402,18 +407,29 @@ if (PHOTOS.length > 0) {
 }
 
 // ── Markers ───────────────────────────────────────────────────
+const markerCluster = L.markerClusterGroup({
+  maxClusterRadius: 60,
+  showCoverageOnHover: false,
+  iconCreateFunction(cluster) {
+    const n = cluster.getChildCount();
+    return L.divIcon({ html: `<div class="ci">${n}</div>`, className: 'photo-cluster', iconSize: [44, 44], iconAnchor: [22, 22] });
+  },
+});
+
 const markers = PHOTOS.map((p, i) => {
   const icon = L.divIcon({
     className: 'photo-marker-wrap',
     html: `<div class="photo-marker" data-idx="${i}"><span class="thumb" style="background-image:url('${p.path}')"></span></div>`,
     iconSize: [42, 42], iconAnchor: [21, 21],
   });
-  const m = L.marker([p.lat, p.lng], { icon }).addTo(map);
+  const m = L.marker([p.lat, p.lng], { icon });
   m.on('click', () => openLightbox(i, false));
   return m;
 });
+markers.forEach(m => markerCluster.addLayer(m));
+map.addLayer(markerCluster);
 
-// ── Sidebar ───────────────────────────────────────────────────
+// ── Sidebar (virtual scroll) ──────────────────────────────────
 const $body = document.getElementById('sidebarBody');
 
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -424,42 +440,71 @@ function fmtDate(s) {
   return isNaN(d) ? s : d.toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-function renderSidebar() {
-  const gpsRows = PHOTOS.map((p, i) => `
-    <div class="photo-row" data-kind="gps" data-idx="${i}">
-      <div class="thumb" style="background-image:url('${p.path}')"></div>
-      <div class="info">
-        <div class="name">${esc(p.name)}</div>
-        <div class="meta"><span><span class="gps-dot">◉</span> ${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span></div>
-      </div>
-    </div>`).join('');
+let lbCurrent = { list: 'gps', i: -1 };
 
-  const noGpsRows = NO_GPS.map((p, i) => `
-    <div class="photo-row no-gps" data-kind="nogps" data-idx="${i}">
-      <div class="thumb" style="background-image:url('${p.path}')"></div>
-      <div class="info">
-        <div class="name">${esc(p.name)}</div>
-        <div class="meta"><span>${fmtDate(p.date)}</span><span>kein GPS</span></div>
-      </div>
-    </div>`).join('');
+const ROW_H = 62, LABEL_H = 40, BUFFER = 8;
 
-  $body.innerHTML = `
-    <div class="section-label">
-      <span class="num">${PHOTOS.length.toString().padStart(2,'0')}</span>
-      <span>Mit GPS</span><span class="line"></span>
-    </div>
-    ${gpsRows || '<p style="padding:10px;font-size:11px;color:var(--ink-600)">Keine Fotos mit GPS.</p>'}
-    ${NO_GPS.length ? `
-      <div class="section-label">
-        <span class="num">${NO_GPS.length.toString().padStart(2,'0')}</span>
-        <span>Ohne GPS</span><span class="line"></span>
-      </div>${noGpsRows}` : ''}`;
+const FLAT = [];
+if (PHOTOS.length) {
+  FLAT.push({ type: 'label', text: 'Mit GPS',   count: PHOTOS.length });
+  PHOTOS.forEach((p, i)  => FLAT.push({ type: 'row', kind: 'gps',   idx: i, p }));
+} else {
+  FLAT.push({ type: 'empty' });
+}
+if (NO_GPS.length) {
+  FLAT.push({ type: 'label', text: 'Ohne GPS', count: NO_GPS.length });
+  NO_GPS.forEach((p, i) => FLAT.push({ type: 'row', kind: 'nogps', idx: i, p }));
+}
+
+const TOPS = new Int32Array(FLAT.length + 1);
+for (let i = 0; i < FLAT.length; i++) {
+  const h = FLAT[i].type === 'label' ? LABEL_H : FLAT[i].type === 'empty' ? 36 : ROW_H;
+  TOPS[i + 1] = TOPS[i] + h;
+}
+const TOTAL_H = TOPS[FLAT.length];
+
+function renderItem(item) {
+  if (item.type === 'label') {
+    return `<div class="section-label"><span class="num">${item.count.toString().padStart(2,'0')}</span><span>${item.text}</span><span class="line"></span></div>`;
+  }
+  if (item.type === 'empty') {
+    return `<p style="padding:10px;font-size:11px;color:var(--ink-600)">Keine Fotos mit GPS.</p>`;
+  }
+  const { kind, idx, p } = item;
+  const active = lbCurrent.list === kind && lbCurrent.i === idx ? ' is-active' : '';
+  const meta = kind === 'gps'
+    ? `<span><span class="gps-dot">◉</span> ${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>`
+    : `<span>${fmtDate(p.date)}</span><span>kein GPS</span>`;
+  return `<div class="photo-row${kind === 'nogps' ? ' no-gps' : ''}${active}" data-kind="${kind}" data-idx="${idx}">
+    <div class="thumb" style="background-image:url('${p.path}')"></div>
+    <div class="info"><div class="name">${esc(p.name)}</div><div class="meta">${meta}</div></div>
+  </div>`;
+}
+
+function renderVirtual() {
+  const st = $body.scrollTop;
+  const ch = $body.clientHeight || 400;
+
+  let lo = 0, hi = FLAT.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (TOPS[mid + 1] <= st) lo = mid + 1; else hi = mid;
+  }
+  const start = Math.max(0, lo - BUFFER);
+  let end = lo;
+  while (end < FLAT.length && TOPS[end] < st + ch) end++;
+  end = Math.min(FLAT.length, end + BUFFER);
+
+  let html = `<div style="height:${TOPS[start]}px" aria-hidden="true"></div>`;
+  for (let i = start; i < end; i++) html += renderItem(FLAT[i]);
+  html += `<div style="height:${Math.max(0, TOTAL_H - TOPS[end])}px" aria-hidden="true"></div>`;
+  $body.innerHTML = html;
 
   $body.querySelectorAll('.photo-row').forEach(row => {
     row.addEventListener('click', () => {
       const kind = row.dataset.kind, idx = +row.dataset.idx;
       if (kind === 'gps') {
-        map.flyTo([PHOTOS[idx].lat, PHOTOS[idx].lng], Math.max(map.getZoom(), 16), { duration: .7 });
+        markerCluster.zoomToShowLayer(markers[idx], () => {});
         openLightbox(idx, false);
       } else {
         openLightbox(idx, true);
@@ -467,12 +512,25 @@ function renderSidebar() {
     });
   });
 }
-renderSidebar();
+
+function scrollSidebarTo(kind, i) {
+  const fi = FLAT.findIndex(it => it.type === 'row' && it.kind === kind && it.idx === i);
+  if (fi >= 0) {
+    const top = TOPS[fi], bot = TOPS[fi + 1], st = $body.scrollTop, ch = $body.clientHeight;
+    if (top < st + 8 || bot > st + ch - 8) $body.scrollTop = Math.max(0, top - 60);
+  }
+  renderVirtual();
+}
+
+$body.addEventListener('scroll', renderVirtual, { passive: true });
+renderVirtual();
 
 document.getElementById('sidebarClose').addEventListener('click', () =>
   document.getElementById('sidebar').classList.add('is-collapsed'));
-document.getElementById('sidebarOpen').addEventListener('click', () =>
-  document.getElementById('sidebar').classList.remove('is-collapsed'));
+document.getElementById('sidebarOpen').addEventListener('click', () => {
+  document.getElementById('sidebar').classList.remove('is-collapsed');
+  renderVirtual();
+});
 
 // ── Lightbox ──────────────────────────────────────────────────
 const $lb      = document.getElementById('lightbox');
@@ -517,7 +575,6 @@ async function fetchPlaceName(lat, lng) {
   } catch { return null; }
 }
 
-let lbCurrent = { list: 'gps', i: 0 };
 const getList = kind => kind === 'gps' ? PHOTOS : NO_GPS;
 
 function buildThumbs(kind) {
@@ -556,14 +613,7 @@ function showAt(kind, i) {
 
   document.querySelectorAll('.photo-marker').forEach(el =>
     el.classList.toggle('is-active', kind === 'gps' && +el.dataset.idx === i));
-  document.querySelectorAll('.photo-row').forEach(el =>
-    el.classList.toggle('is-active', el.dataset.kind === kind && +el.dataset.idx === i));
-
-  const activeRow = $body.querySelector('.photo-row.is-active');
-  if (activeRow) {
-    const br = $body.getBoundingClientRect(), rr = activeRow.getBoundingClientRect();
-    if (rr.top < br.top + 8 || rr.bottom > br.bottom - 8) $body.scrollTop += (rr.top - br.top) - 60;
-  }
+  scrollSidebarTo(kind, i);
   $lbThumbs.querySelectorAll('.t').forEach(t => t.classList.toggle('is-active', +t.dataset.i === i));
 }
 
@@ -580,7 +630,9 @@ function closeLightbox() {
   $lb.classList.remove('is-open');
   $lb.setAttribute('aria-hidden', 'true');
   $lb.addEventListener('transitionend', () => { $lb.style.display = ''; }, { once: true });
-  document.querySelectorAll('.photo-marker, .photo-row').forEach(el => el.classList.remove('is-active'));
+  document.querySelectorAll('.photo-marker').forEach(el => el.classList.remove('is-active'));
+  lbCurrent = { list: lbCurrent.list, i: -1 };
+  renderVirtual();
 }
 
 function nudge(d) {
