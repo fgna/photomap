@@ -37,10 +37,10 @@ function make_thumbnail(string $source, string $dest, int $size): bool {
     $dst = imagecreatetruecolor($size, $size);
     imagecopyresampled($dst, $src_img, 0, 0, (int)$ox, (int)$oy, $size, $size, (int)$sq, (int)$sq);
     $tmp = $dest . '.tmp.' . getmypid();
-    imagejpeg($dst, $tmp, 85);
+    $ok  = imagejpeg($dst, $tmp, 85);
     imagedestroy($src_img);
     imagedestroy($dst);
-    rename($tmp, $dest);
+    if (!$ok || !rename($tmp, $dest)) { @unlink($tmp); return false; } // #1
     return true;
 }
 
@@ -61,13 +61,13 @@ function make_resized(string $source, string $dest, int $max): bool {
         else            { $dh = $max; $dw = (int)round($sw * $max / $sh); }
         $dst = imagecreatetruecolor($dw, $dh);
         imagecopyresampled($dst, $src_img, 0, 0, 0, 0, $dw, $dh, $sw, $sh);
-        imagejpeg($dst, $tmp, 85);
+        $ok = imagejpeg($dst, $tmp, 85);
         imagedestroy($dst);
     } else {
-        imagejpeg($src_img, $tmp, 92);
+        $ok = imagejpeg($src_img, $tmp, 92);
     }
     imagedestroy($src_img);
-    rename($tmp, $dest);
+    if (!$ok || !rename($tmp, $dest)) { @unlink($tmp); return false; } // #1
     return true;
 }
 
@@ -97,7 +97,7 @@ if (isset($_GET['thumb'])) {
         http_response_code(404); exit;
     }
 
-    if (!is_dir($THUMB_DIR)) @mkdir($THUMB_DIR, 0755, true);
+    if (!is_dir($THUMB_DIR) && !@mkdir($THUMB_DIR, 0755, true)) { http_response_code(500); exit; }
     $thumb  = $THUMB_DIR . md5($file) . '.jpg';
     $imtime = (int)filemtime($source);
 
@@ -121,7 +121,7 @@ if (isset($_GET['full'])) {
         http_response_code(404); exit;
     }
 
-    if (!is_dir($RESIZED_DIR)) @mkdir($RESIZED_DIR, 0755, true);
+    if (!is_dir($RESIZED_DIR) && !@mkdir($RESIZED_DIR, 0755, true)) { http_response_code(500); exit; }
     $resized = $RESIZED_DIR . md5($file) . '.jpg';
     $imtime  = (int)filemtime($source);
 
@@ -168,12 +168,20 @@ function gps_from_raw(string $path): ?array {
     if ($exif_pos === false) return null;
 
     $tiff_start = $exif_pos + 6;
+    $raw_len    = strlen($raw);
+    if ($tiff_start + 8 > $raw_len) return null;
     $byte_order = substr($raw, $tiff_start, 2);
     $le         = ($byte_order === 'II');
-    $read16     = fn($o) => $le ? unpack('v', substr($raw, $tiff_start + $o, 2))[1]
-                                : unpack('n', substr($raw, $tiff_start + $o, 2))[1];
-    $read32     = fn($o) => $le ? unpack('V', substr($raw, $tiff_start + $o, 4))[1]
-                                : unpack('N', substr($raw, $tiff_start + $o, 4))[1];
+    $read16     = function($o) use (&$raw, $tiff_start, $raw_len, $le): int {
+        if ($tiff_start + $o + 2 > $raw_len) return 0;
+        return $le ? unpack('v', substr($raw, $tiff_start + $o, 2))[1]
+                   : unpack('n', substr($raw, $tiff_start + $o, 2))[1];
+    };
+    $read32     = function($o) use (&$raw, $tiff_start, $raw_len, $le): int {
+        if ($tiff_start + $o + 4 > $raw_len) return 0;
+        return $le ? unpack('V', substr($raw, $tiff_start + $o, 4))[1]
+                   : unpack('N', substr($raw, $tiff_start + $o, 4))[1];
+    };
 
     $ifd0_offset    = $read32(4);
     $ifd0_count     = $read16($ifd0_offset);
@@ -261,6 +269,7 @@ function read_photo_meta(string $path): array {
 
 function load_cache(string $path, int $ver): array {
     if (!is_file($path)) return ['v' => $ver, 'f' => []];
+    if (filesize($path) > 50 * 1024 * 1024) { error_log("photomap: cache file exceeds 50 MB, ignoring"); return ['v' => $ver, 'f' => []]; }
     $data = @json_decode(@file_get_contents($path), true);
     if (!is_array($data)) return ['v' => $ver, 'f' => []];
     if (($data['v'] ?? 0) !== $ver) {
@@ -276,8 +285,10 @@ function load_cache(string $path, int $ver): array {
     return $data;
 }
 
-function save_cache(string $path, array $cache): void {
-    @file_put_contents($path, json_encode($cache, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
+function save_cache(string $path, array $cache): bool {
+    $ok = file_put_contents($path, json_encode($cache, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
+    if ($ok === false) { error_log("photomap: failed to write cache $path"); return false; }
+    return true;
 }
 
 // Nominatim reverse geocode → POI name or street/place name.
@@ -295,10 +306,11 @@ function nominatim_reverse(float $lat, float $lng): ?string {
         CURLOPT_FOLLOWLOCATION => false,
         CURLOPT_SSL_VERIFYPEER => true,
     ]);
-    $json  = curl_exec($ch);
-    $errno = curl_errno($ch);
+    $json   = curl_exec($ch);
+    $errno  = curl_errno($ch);
+    $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
-    if ($errno !== 0 || $json === false || $json === '') return null; // network failure — will retry later
+    if ($errno !== 0 || $json === false || $json === '' || $status !== 200) return null;
     $d = json_decode($json, true);
     if (!is_array($d)) return null;
 
@@ -350,8 +362,8 @@ if (is_dir($IMAGE_DIR)) {
         }
     }
 
-    if (!is_dir($THUMB_DIR))   @mkdir($THUMB_DIR,   0755, true);
-    if (!is_dir($RESIZED_DIR)) @mkdir($RESIZED_DIR, 0755, true);
+    if (!is_dir($THUMB_DIR)   && !@mkdir($THUMB_DIR,   0755, true)) error_log("photomap: cannot create $THUMB_DIR");
+    if (!is_dir($RESIZED_DIR) && !@mkdir($RESIZED_DIR, 0755, true)) error_log("photomap: cannot create $RESIZED_DIR");
 
     foreach ($files as $file) {
         $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
@@ -493,7 +505,7 @@ if (isset($_GET['api']) && $_GET['api'] === 'photos') {
                     $cache['geo'][$key] = $result;
                     if ($result === null) $cache['geo_retry'][$key] = time();
                     $geo_count++;
-                    if ($geo_count % 10 === 0) save_cache($CACHE_FILE, $cache);
+                    if ($geo_count % 10 === 0 && !save_cache($CACHE_FILE, $cache)) break;
                     sleep(1);
                 }
                 if ($geo_count % 10 !== 0) save_cache($CACHE_FILE, $cache);
@@ -916,7 +928,7 @@ function scheduleGeocodeRefresh() {
         if (changed) renderVirtual();
         if (d.pending) scheduleGeocodeRefresh();
       })
-      .catch(() => {});
+      .catch(err => { console.warn('Geocode refresh failed:', err); });
   }, 6000);
 }
 
@@ -1047,7 +1059,11 @@ function showAt(kind, i) {
   // Show spinner while full-res image loads (#9)
   $lbMedia.classList.remove('loaded');
   $lbImage.onload  = () => $lbMedia.classList.add('loaded');
-  $lbImage.onerror = () => $lbMedia.classList.add('loaded');
+  $lbImage.onerror = () => {
+    $lbMedia.classList.add('loaded');
+    $lbMedia.insertAdjacentHTML('beforeend',
+      '<p style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--ink-600);font-size:12px;margin:0">Could not load image</p>');
+  };
   $lbImage.src = p.path;
 
   $lbNow.textContent   = (i+1).toString().padStart(2,'0');
@@ -1167,10 +1183,10 @@ function initApp(photos, noGps) {
 }
 
 fetch('?api=photos')
-  .then(r => r.json())
+  .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
   .then(d => { initApp(d.photos, d.no_gps); if (d.geocoding_pending) scheduleGeocodeRefresh(); })
-  .catch(() => {
-    $body.innerHTML = '<p style="padding:20px 10px;font-size:11px;color:var(--ink-600)">Error loading photos.</p>';
+  .catch(err => {
+    $body.innerHTML = `<p style="padding:20px 10px;font-size:11px;color:var(--ink-600)">Error loading photos: ${err.message}</p>`;
   });
 </script>
 <?php endif; ?>
