@@ -88,6 +88,31 @@ python build.py [options]
   --php-file PATH     template.php to extract CSS/JS from (default: ./template.php)
 ```
 
+## FTP deploy
+
+Pass FTP credentials to upload `dist/` to your web server immediately after building:
+
+```bash
+python build.py --ftp-host ftp.example.com --ftp-user myuser --ftp-dir /public_html
+# Password is prompted securely if not provided
+```
+
+Or supply the password via environment variable to avoid the prompt (useful in scripts):
+
+```bash
+FTP_PASSWORD=secret python build.py --ftp-host ftp.example.com --ftp-user myuser --ftp-dir /public_html
+```
+
+| Flag | Description |
+|---|---|
+| `--ftp-host HOST` | FTP server hostname |
+| `--ftp-user USER` | FTP username |
+| `--ftp-password PASS` | FTP password (or use `FTP_PASSWORD` env var) |
+| `--ftp-dir PATH` | Remote directory to upload into (default: `/`) |
+| `--ftp-tls` | Use FTPS (FTP over TLS) for encrypted transfer |
+
+The entire `dist/` directory is uploaded, creating remote subdirectories as needed.
+
 ## Geocoding
 
 GPS coordinates are automatically reverse-geocoded via [Nominatim](https://nominatim.openstreetmap.org/) (OpenStreetMap) at build time. Results — street names, POI names, town names — appear in the sidebar and lightbox.

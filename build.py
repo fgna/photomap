@@ -13,6 +13,8 @@ Usage:
 """
 
 import argparse
+import ftplib
+import getpass
 import hashlib
 import json
 import os
@@ -322,6 +324,53 @@ def render_html(title, year, total, gps_count, css, js, data, has_photos):
     return f'{head}\n{header}\n{body}\n{script}\n</body>\n</html>\n'
 
 
+# ── FTP deploy ───────────────────────────────────────────────────────────────
+
+def _ftp_makedirs(ftp, remote_dir):
+    """Create remote directory tree, ignoring already-exists errors."""
+    parts = remote_dir.replace('\\', '/').split('/')
+    path = ''
+    for part in parts:
+        if not part:
+            continue
+        path += '/' + part
+        try:
+            ftp.mkd(path)
+        except ftplib.error_perm:
+            pass  # already exists
+
+
+def deploy_ftp(dist_dir, host, user, password, remote_dir, use_tls=False):
+    dist_path  = Path(dist_dir).resolve()
+    remote_dir = '/' + remote_dir.strip('/')
+
+    print(f'\nConnecting to {host} ...')
+    FTPClass = ftplib.FTP_TLS if use_tls else ftplib.FTP
+    with FTPClass() as ftp:
+        ftp.connect(host)
+        ftp.login(user, password)
+        if use_tls:
+            ftp.prot_p()
+        ftp.set_pasv(True)
+        print(f'Connected. Uploading to {remote_dir} ...')
+
+        uploaded = 0
+        for local in sorted(dist_path.rglob('*')):
+            rel      = local.relative_to(dist_path)
+            remote   = remote_dir + '/' + str(rel).replace(os.sep, '/')
+
+            if local.is_dir():
+                _ftp_makedirs(ftp, remote)
+            else:
+                _ftp_makedirs(ftp, remote_dir + '/' + str(rel.parent).replace(os.sep, '/'))
+                with open(local, 'rb') as f:
+                    ftp.storbinary(f'STOR {remote}', f)
+                print(f'  {rel}')
+                uploaded += 1
+
+    print(f'Uploaded {uploaded} file(s) to {host}{remote_dir}')
+
+
 # ── Main build ────────────────────────────────────────────────────────────────
 
 def build(trips_dir, output_dir, cache_file, php_file, title, no_geocode, force_thumbs):
@@ -486,6 +535,16 @@ def main():
     ap.add_argument('--title',        default='Photo Map',                          help='Site title')
     ap.add_argument('--no-geocode',   action='store_true',  help='Skip Nominatim geocoding')
     ap.add_argument('--force-thumbs', action='store_true',  help='Regenerate all thumbnails')
+
+    ftp = ap.add_argument_group('FTP deploy (optional)')
+    ftp.add_argument('--ftp-host',     metavar='HOST', help='FTP hostname')
+    ftp.add_argument('--ftp-user',     metavar='USER', help='FTP username')
+    ftp.add_argument('--ftp-password', metavar='PASS',
+                     help='FTP password (or set FTP_PASSWORD env var; prompted if omitted)')
+    ftp.add_argument('--ftp-dir',      metavar='PATH', default='/',
+                     help='Remote directory to upload into (default: /)')
+    ftp.add_argument('--ftp-tls',      action='store_true', help='Use FTPS (FTP over TLS)')
+
     args = ap.parse_args()
 
     build(
@@ -497,6 +556,21 @@ def main():
         no_geocode   = args.no_geocode,
         force_thumbs = args.force_thumbs,
     )
+
+    if args.ftp_host:
+        password = (
+            args.ftp_password
+            or os.environ.get('FTP_PASSWORD')
+            or getpass.getpass(f'FTP password for {args.ftp_user}@{args.ftp_host}: ')
+        )
+        deploy_ftp(
+            dist_dir   = args.output,
+            host       = args.ftp_host,
+            user       = args.ftp_user,
+            password   = password,
+            remote_dir = args.ftp_dir,
+            use_tls    = args.ftp_tls,
+        )
 
 
 if __name__ == '__main__':
