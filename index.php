@@ -367,7 +367,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 .leaflet-control-zoom a{background:var(--paper)!important;color:var(--ink)!important;border-bottom:1px solid var(--ink-100)!important;width:36px!important;height:36px!important;line-height:36px!important;font-family:var(--serif);font-size:18px;}
 .leaflet-control-zoom a:hover{background:var(--ink-50)!important}
 .leaflet-control-zoom a:last-child{border-bottom:0!important}
-.leaflet-tile-pane{filter:contrast(0.96) brightness(1.02)}
+.leaflet-tile-pane{filter:grayscale(1) contrast(0.96) brightness(1.02)}
 
 .photo-marker{width:42px;height:42px;border-radius:999px;background:var(--paper);padding:3px;box-shadow:var(--shadow-2);cursor:pointer;transition:transform .25s cubic-bezier(.2,.8,.2,1), box-shadow .25s;position:relative;}
 .photo-marker .thumb{width:100%;height:100%;border-radius:999px;background-size:cover;background-position:center;display:block;}
