@@ -350,6 +350,20 @@ if (!isset($cache['geo']) || ($cache['geo_v'] ?? 0) !== $GEO_VER) {
 }
 if (!isset($cache['geo_retry'])) { $cache['geo_retry'] = []; $cache_dirty = true; }
 
+// ── Rebuild API ───────────────────────────────────────────────
+if (isset($_GET['api']) && $_GET['api'] === 'rebuild') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    $n = 0;
+    foreach ($cache['trips'] as &$tc) {
+        $tc['clean'] = false; $tc['dir_mtime'] = 0; $n++;
+    }
+    unset($tc);
+    save_cache($CACHE_FILE, $cache);
+    echo json_encode(['ok' => true, 'trips_reset' => $n], JSON_HEX_TAG);
+    exit;
+}
+
 if (is_dir($TRIPS_DIR)) {
     foreach (scandir($TRIPS_DIR) ?: [] as $d) {
         if ($d[0] !== '.' && is_dir($TRIPS_DIR . $d)) $trip_slugs[] = $d;
@@ -366,19 +380,36 @@ foreach ($trip_slugs as $cidx => $slug) {
     $trip_meta[$slug] = ['label' => $trip_label, 'color' => $trip_color];
 
     if (!isset($cache['trips'][$slug])) {
-        $cache['trips'][$slug] = ['dir_mtime' => 0, 'files' => [], 'f' => []];
+        $cache['trips'][$slug] = ['dir_mtime' => 0, 'files' => [], 'f' => [], 'clean' => false];
     }
     $tc = &$cache['trips'][$slug];
 
-    $dir_mtime = (int)filemtime($trip_dir);
-    if ($tc['dir_mtime'] !== $dir_mtime || empty($tc['files'])) {
+    // Fast path: zero syscalls when cache is fully built for this trip
+    if (($tc['clean'] ?? false) && isset($tc['photos_gps'], $tc['photos_no_gps'])) {
+        foreach ($tc['photos_gps'] as $cached) {
+            $geo_key = sprintf('%.3f,%.3f', $cached['lat'], $cached['lng']);
+            $cached['loc']        = $cache['geo'][$geo_key] ?? null;
+            $cached['trip_color'] = $trip_color;
+            $all_photos_with_gps[] = $cached;
+        }
+        foreach ($tc['photos_no_gps'] as $cached) {
+            $cached['trip_color'] = $trip_color;
+            $all_photos_without_gps[] = $cached;
+        }
+        unset($tc);
+        continue;
+    }
+
+    // Slow path: check dir for changes, prune stale EXIF entries, scan files
+    $dir_mtime   = (int)filemtime($trip_dir);
+    $dir_changed = $tc['dir_mtime'] !== $dir_mtime || empty($tc['files']);
+    if ($dir_changed) {
         $scanned = scandir($trip_dir) ?: [];
         usort($scanned, 'strcasecmp');
         $tc['files']     = array_values($scanned);
         $tc['dir_mtime'] = $dir_mtime;
         $cache_dirty     = true;
     }
-
     $active_ext = array_flip(array_filter($tc['files'],
         fn($f) => in_array(strtolower(pathinfo($f, PATHINFO_EXTENSION)), $EXTENSIONS)));
     foreach (array_keys($tc['f']) as $cf) {
@@ -389,6 +420,10 @@ foreach ($trip_slugs as $cidx => $slug) {
     $resized_dir_t = $trip_dir . '.resized'    . DIRECTORY_SEPARATOR;
     if (!is_dir($thumb_dir_t)   && !@mkdir($thumb_dir_t,   0755, true)) error_log("photomap: cannot create $thumb_dir_t");
     if (!is_dir($resized_dir_t) && !@mkdir($resized_dir_t, 0755, true)) error_log("photomap: cannot create $resized_dir_t");
+
+    $trip_gps    = [];
+    $trip_no_gps = [];
+    $trip_clean  = true;
 
     foreach ($tc['files'] as $file) {
         $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
@@ -410,9 +445,9 @@ foreach ($trip_slugs as $cidx => $slug) {
         $thumb_file   = $thumb_dir_t   . md5($file) . '.jpg';
         $resized_file = $resized_dir_t . md5($file) . '.jpg';
         if (!is_file($thumb_file)   || (int)filemtime($thumb_file)   < $mtime)
-            $pending_thumbs[] = ['src' => $full_path, 'dst' => $thumb_file,   'type' => 'thumb'];
+            { $pending_thumbs[] = ['src' => $full_path, 'dst' => $thumb_file,   'type' => 'thumb'];   $trip_clean = false; }
         if (!is_file($resized_file) || (int)filemtime($resized_file) < $mtime)
-            $pending_thumbs[] = ['src' => $full_path, 'dst' => $resized_file, 'type' => 'resized'];
+            { $pending_thumbs[] = ['src' => $full_path, 'dst' => $resized_file, 'type' => 'resized']; $trip_clean = false; }
 
         $qs = '&trip=' . rawurlencode($slug);
         $info = [
@@ -433,11 +468,20 @@ foreach ($trip_slugs as $cidx => $slug) {
             $info['lat'] = $lat;
             $info['lng'] = $lng;
             $info['loc'] = $cache['geo'][$geo_key] ?? null;
-            $all_photos_with_gps[] = $info;
+            $trip_gps[]  = $info;
         } else {
-            $all_photos_without_gps[] = $info;
+            $trip_no_gps[] = $info;
         }
     }
+
+    // Cache photo list (without dynamic 'loc') so future requests can use the fast path
+    $tc['photos_gps']    = array_map(fn($p) => array_diff_key($p, ['loc' => 0]), $trip_gps);
+    $tc['photos_no_gps'] = $trip_no_gps;
+    $tc['clean']         = $trip_clean;
+    $cache_dirty         = true;
+
+    array_push($all_photos_with_gps,    ...$trip_gps);
+    array_push($all_photos_without_gps, ...$trip_no_gps);
     unset($tc);
 }
 
