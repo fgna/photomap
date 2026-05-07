@@ -18,7 +18,7 @@ $RESIZED_DIR = __DIR__ . '/.resized/';
 $RESIZED_MAX = 2048;        // max dimension for display images (lightbox) in px
 $DELETE_ORIGINALS_BELOW_MB = 0; // delete original after resize when free space < N MB (0 = never)
 $EXTENSIONS = ['jpg', 'jpeg', 'webp', 'png', 'heic', 'tiff', 'tif'];
-$CACHE_VER  = 3;
+$CACHE_VER  = 4;
 
 // ── Thumbnail generation (shared) ───────────────────────────
 // Returns true on success, false when GD cannot decode the format.
@@ -36,17 +36,39 @@ function make_thumbnail(string $source, string $dest, int $size): bool {
     else            { $ox = 0; $oy = ($sh - $sw) / 2; $sq = $sw; }
     $dst = imagecreatetruecolor($size, $size);
     imagecopyresampled($dst, $src_img, 0, 0, (int)$ox, (int)$oy, $size, $size, (int)$sq, (int)$sq);
-    imagejpeg($dst, $dest, 85);
+    $tmp = $dest . '.tmp.' . getmypid();
+    imagejpeg($dst, $tmp, 85);
     imagedestroy($src_img);
     imagedestroy($dst);
+    rename($tmp, $dest);
     return true;
+}
+
+// Sends cached-image headers and exits with 304 if the client already has this version.
+function serve_image(string $cached_path, int $source_mtime, string $etag): void {
+    header('Content-Type: image/jpeg');
+    header('Cache-Control: public, max-age=31536000, immutable');
+    header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $source_mtime) . ' GMT');
+    header('ETag: "' . $etag . '"');
+    $inm = $_SERVER['HTTP_IF_NONE_MATCH'] ?? '';
+    $ims = $_SERVER['HTTP_IF_MODIFIED_SINCE'] ?? '';
+    if (($inm && str_contains($inm, '"' . $etag . '"'))
+        || (!$inm && $ims && strtotime($ims) >= $source_mtime)) {
+        http_response_code(304); exit;
+    }
+    header('Content-Length: ' . filesize($cached_path));
+    readfile($cached_path);
+    exit;
 }
 
 // ── Thumbnail endpoint ───────────────────────────────────────
 if (isset($_GET['thumb'])) {
     $file   = basename($_GET['thumb']);
     $source = $IMAGE_DIR . $file;
-    if (!is_file($source)) { http_response_code(404); exit; }
+    $real   = realpath($source);
+    if ($real === false || strncmp($real, realpath($IMAGE_DIR), strlen(realpath($IMAGE_DIR))) !== 0) {
+        http_response_code(404); exit;
+    }
 
     if (!is_dir($THUMB_DIR)) @mkdir($THUMB_DIR, 0755, true);
     $thumb  = $THUMB_DIR . md5($file) . '.jpg';
@@ -60,18 +82,17 @@ if (isset($_GET['thumb'])) {
         }
     }
 
-    header('Content-Type: image/jpeg');
-    header('Cache-Control: public, max-age=31536000, immutable');
-    header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $imtime) . ' GMT');
-    readfile($thumb);
-    exit;
+    serve_image($thumb, $imtime, md5($file . $imtime));
 }
 
 // ── Display-size image endpoint ──────────────────────────────
 if (isset($_GET['full'])) {
     $file    = basename($_GET['full']);
     $source  = $IMAGE_DIR . $file;
-    if (!is_file($source)) { http_response_code(404); exit; }
+    $real    = realpath($source);
+    if ($real === false || strncmp($real, realpath($IMAGE_DIR), strlen(realpath($IMAGE_DIR))) !== 0) {
+        http_response_code(404); exit;
+    }
 
     if (!is_dir($RESIZED_DIR)) @mkdir($RESIZED_DIR, 0755, true);
     $resized = $RESIZED_DIR . md5($file) . '.jpg';
@@ -92,10 +113,14 @@ if (isset($_GET['full'])) {
                 else            { $dh = $RESIZED_MAX; $dw = (int)round($sw * $RESIZED_MAX / $sh); }
                 $dst = imagecreatetruecolor($dw, $dh);
                 imagecopyresampled($dst, $src_img, 0, 0, 0, 0, $dw, $dh, $sw, $sh);
-                imagejpeg($dst, $resized, 85);
+                $tmp = $resized . '.tmp.' . getmypid();
+                imagejpeg($dst, $tmp, 85);
                 imagedestroy($dst);
+                rename($tmp, $resized);
             } else {
-                imagejpeg($src_img, $resized, 92); // already small — normalise format
+                $tmp = $resized . '.tmp.' . getmypid();
+                imagejpeg($src_img, $tmp, 92); // already small — normalise format
+                rename($tmp, $resized);
             }
             imagedestroy($src_img);
         } else {
@@ -110,11 +135,7 @@ if (isset($_GET['full'])) {
         if ($free_mb !== false && $free_mb < $DELETE_ORIGINALS_BELOW_MB) @unlink($source);
     }
 
-    header('Content-Type: image/jpeg');
-    header('Cache-Control: public, max-age=31536000, immutable');
-    header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $imtime) . ' GMT');
-    readfile($resized);
-    exit;
+    serve_image($resized, $imtime, md5($file . $imtime));
 }
 
 // ── GPS-Helfer ───────────────────────────────────────────────
@@ -137,7 +158,7 @@ function dms_to_decimal(array $dms, string $ref): float {
 
 // Reads GPS from raw bytes — fallback for WebP / non-JPEG formats.
 function gps_from_raw(string $path): ?array {
-    $raw = file_get_contents($path, false, null, 0, 65536);
+    $raw = file_get_contents($path, false, null, 0, 131072);
     if ($raw === false) return null;
     $exif_pos = strpos($raw, "Exif\x00\x00");
     if ($exif_pos === false) $exif_pos = strpos($raw, "EXIF\x00\x00");
@@ -245,20 +266,27 @@ function save_cache(string $path, array $cache): void {
     @file_put_contents($path, json_encode($cache, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
 }
 
-// Nominatim reverse geocode → POI name or street/place name, or '' if not found.
-function nominatim_reverse(float $lat, float $lng): string {
+// Nominatim reverse geocode → POI name or street/place name.
+// Returns a string (possibly '') on success, or null on network/parse failure.
+function nominatim_reverse(float $lat, float $lng): ?string {
     $url = sprintf(
         'https://nominatim.openstreetmap.org/reverse?lat=%.7f&lon=%.7f&format=json&zoom=15',
         $lat, $lng
     );
-    $ctx  = stream_context_create(['http' => [
-        'header'  => "User-Agent: PhotoMap/1.0\r\nAccept-Language: de\r\n",
-        'timeout' => 8,
-    ]]);
-    $json = @file_get_contents($url, false, $ctx);
-    if (!$json) return '';
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 8,
+        CURLOPT_HTTPHEADER     => ['User-Agent: PhotoMap/1.0', 'Accept-Language: en'],
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_SSL_VERIFYPEER => true,
+    ]);
+    $json  = curl_exec($ch);
+    $errno = curl_errno($ch);
+    curl_close($ch);
+    if ($errno !== 0 || $json === false || $json === '') return null; // network failure — will retry later
     $d = json_decode($json, true);
-    if (!is_array($d)) return '';
+    if (!is_array($d)) return null;
 
     // Prefer the matched object's own name when it is a POI/landmark
     $name  = $d['name'] ?? '';
@@ -276,19 +304,27 @@ function nominatim_reverse(float $lat, float $lng): string {
 
 $photos_with_gps    = [];
 $photos_without_gps = [];
+$pending_thumbs     = [];
 
 if (is_dir($IMAGE_DIR)) {
     $cache       = load_cache($CACHE_FILE, $CACHE_VER);
-    $GEO_VER = 3; // bump to re-geocode with zoom=15 for broader POI names
+    $cache_dirty = false;
+    $GEO_VER = 3;
     if (!isset($cache['geo']) || ($cache['geo_v'] ?? 0) !== $GEO_VER) {
         $cache['geo']   = [];
         $cache['geo_v'] = $GEO_VER;
         $cache_dirty    = true;
     }
-    $cache_dirty = false;
 
-    $files = scandir($IMAGE_DIR);
-    usort($files, 'strcasecmp');
+    $dir_mtime = (int)filemtime($IMAGE_DIR);
+    if (!isset($cache['dir_mtime']) || $cache['dir_mtime'] !== $dir_mtime || empty($cache['files'])) {
+        $scanned = scandir($IMAGE_DIR);
+        usort($scanned, 'strcasecmp');
+        $cache['files']     = $scanned;
+        $cache['dir_mtime'] = $dir_mtime;
+        $cache_dirty        = true;
+    }
+    $files = $cache['files'];
     foreach ($files as $file) {
         $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
         if (!in_array($ext, $EXTENSIONS)) continue;
@@ -306,11 +342,11 @@ if (is_dir($IMAGE_DIR)) {
             $cache_dirty = true;
         }
 
-        // Eagerly generate thumbnail so it is ready before the browser requests it.
+        // Collect thumbnails that need generating; created in background after response is sent.
         if (!is_dir($THUMB_DIR)) @mkdir($THUMB_DIR, 0755, true);
         $thumb_file = $THUMB_DIR . md5($file) . '.jpg';
         if (!is_file($thumb_file) || (int)filemtime($thumb_file) < $mtime) {
-            make_thumbnail($full_path, $thumb_file, $THUMB_SIZE);
+            $pending_thumbs[] = ['src' => $full_path, 'dst' => $thumb_file];
         }
 
         $web_path   = '?full=' . rawurlencode($file);
@@ -338,9 +374,13 @@ if (is_dir($IMAGE_DIR)) {
 // ── JSON API endpoint ────────────────────────────────────────
 if (isset($_GET['api']) && $_GET['api'] === 'photos') {
     // Determine whether any GPS photo still needs geocoding.
+    // null in geo cache = previous network failure; retry after 24 h.
+    $retry_before = time() - 86400;
     $needs_geocode = false;
     foreach ($photos_with_gps as $p) {
-        if (!array_key_exists(sprintf('%.3f,%.3f', $p['lat'], $p['lng']), $cache['geo'])) {
+        $key = sprintf('%.3f,%.3f', $p['lat'], $p['lng']);
+        if (!array_key_exists($key, $cache['geo'])
+            || ($cache['geo'][$key] === null && ($cache['geo_retry'][$key] ?? 0) < $retry_before)) {
             $needs_geocode = true;
             break;
         }
@@ -351,15 +391,22 @@ if (isset($_GET['api']) && $_GET['api'] === 'photos') {
         JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG
     );
 
+    // Gzip if the client supports it — reduces a large payload to ~20% of raw size.
+    $accept_enc = $_SERVER['HTTP_ACCEPT_ENCODING'] ?? '';
+    $use_gzip   = function_exists('gzencode') && str_contains($accept_enc, 'gzip');
+    $body       = $use_gzip ? gzencode($json, 6) : $json;
+
     header('Content-Type: application/json; charset=utf-8');
     // No-store when geocoding is still pending so the next load always gets fresh data.
     header('Cache-Control: ' . ($needs_geocode ? 'no-store' : 'public, max-age=60, stale-while-revalidate=3600'));
-    header('Content-Length: ' . strlen($json));
-    echo $json;
+    header('Content-Length: ' . mb_strlen($body, '8bit'));
+    if ($use_gzip) header('Content-Encoding: gzip');
+    echo $body;
 
-    // Close the connection so the browser gets the response immediately,
-    // then finish geocoding in the background (≤1 req/s per Nominatim policy).
-    if ($needs_geocode) {
+    // Close the connection so the browser gets its response immediately, then do
+    // background work: generate any missing thumbnails and geocode pending locations.
+    $has_background_work = $needs_geocode || !empty($pending_thumbs);
+    if ($has_background_work) {
         ignore_user_abort(true);
         if (function_exists('fastcgi_finish_request')) {
             fastcgi_finish_request();
@@ -368,20 +415,35 @@ if (isset($_GET['api']) && $_GET['api'] === 'photos') {
             flush();
         }
 
-        $lock = $CACHE_FILE . '.lock';
-        if (is_file($lock) && filemtime($lock) < time() - 90) @unlink($lock);
-        $fh = @fopen($lock, 'x');
-        if ($fh) {
-            set_time_limit(0);
-            foreach ($photos_with_gps as $p) {
-                $key = sprintf('%.3f,%.3f', $p['lat'], $p['lng']);
-                if (array_key_exists($key, $cache['geo'])) continue;
-                $cache['geo'][$key] = nominatim_reverse($p['lat'], $p['lng']);
-                sleep(1);
+        // Generate missing thumbnails (CPU-bound; no rate limit needed).
+        foreach ($pending_thumbs as $t) {
+            make_thumbnail($t['src'], $t['dst'], $THUMB_SIZE);
+        }
+
+        // Geocode pending locations (≤1 req/s per Nominatim policy).
+        if ($needs_geocode) {
+            $lock = $CACHE_FILE . '.lock';
+            if (is_file($lock) && filemtime($lock) < time() - 90) @unlink($lock);
+            $fh = @fopen($lock, 'x');
+            if ($fh) {
+                set_time_limit(0);
+                foreach ($photos_with_gps as $p) {
+                    $key = sprintf('%.3f,%.3f', $p['lat'], $p['lng']);
+                    if (array_key_exists($key, $cache['geo'])
+                        && !($cache['geo'][$key] === null && ($cache['geo_retry'][$key] ?? 0) < $retry_before)) {
+                        continue;
+                    }
+                    $result = nominatim_reverse($p['lat'], $p['lng']);
+                    $cache['geo'][$key] = $result;
+                    if ($result === null) {
+                        $cache['geo_retry'][$key] = time();
+                    }
+                    save_cache($CACHE_FILE, $cache);
+                    sleep(1);
+                }
+                @fclose($fh);
+                @unlink($lock);
             }
-            save_cache($CACHE_FILE, $cache);
-            @fclose($fh);
-            @unlink($lock);
         }
     }
     exit;
