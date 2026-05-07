@@ -10,7 +10,7 @@ $CACHE_FILE = __DIR__ . '/.photomap-cache.json';
 $THUMB_DIR  = __DIR__ . '/.thumbnails/';
 $THUMB_SIZE = 240;          // square thumbnail px
 $EXTENSIONS = ['jpg', 'jpeg', 'webp', 'png', 'heic', 'tiff', 'tif'];
-$CACHE_VER  = 3;            // bumped: cache now stores thumb URL
+$CACHE_VER  = 3;            // bumped to clear v2 caches after schema review
 
 // ── Thumbnail endpoint ───────────────────────────────────────
 if (isset($_GET['thumb'])) {
