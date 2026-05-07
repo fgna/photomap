@@ -182,6 +182,26 @@ function save_cache(string $path, array $cache): void {
     @file_put_contents($path, json_encode($cache, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
 }
 
+// Nominatim reverse geocode → street/place name, or '' if not found.
+function nominatim_reverse(float $lat, float $lng): string {
+    $url = sprintf(
+        'https://nominatim.openstreetmap.org/reverse?lat=%.7f&lon=%.7f&format=json&zoom=17',
+        $lat, $lng
+    );
+    $ctx  = stream_context_create(['http' => [
+        'header'  => "User-Agent: PhotoMap/1.0\r\nAccept-Language: de\r\n",
+        'timeout' => 8,
+    ]]);
+    $json = @file_get_contents($url, false, $ctx);
+    if (!$json) return '';
+    $d = json_decode($json, true);
+    if (!is_array($d)) return '';
+    $a = $d['address'] ?? [];
+    return $a['road'] ?? $a['pedestrian'] ?? $a['footway'] ?? $a['path']
+        ?? $a['neighbourhood'] ?? $a['suburb'] ?? $a['city_district']
+        ?? $a['city'] ?? $a['town'] ?? $a['village'] ?? '';
+}
+
 // ── Fotos einlesen ───────────────────────────────────────────
 
 $photos_with_gps    = [];
@@ -189,6 +209,7 @@ $photos_without_gps = [];
 
 if (is_dir($IMAGE_DIR)) {
     $cache       = load_cache($CACHE_FILE, $CACHE_VER);
+    if (!isset($cache['geo'])) $cache['geo'] = [];
     $cache_dirty = false;
 
     $files = scandir($IMAGE_DIR);
@@ -217,8 +238,12 @@ if (is_dir($IMAGE_DIR)) {
                  'name' => $name_display, 'date' => $date];
 
         if ($gps) {
-            $info['lat'] = round($gps['lat'], 7);
-            $info['lng'] = round($gps['lng'], 7);
+            $lat = round($gps['lat'], 7);
+            $lng = round($gps['lng'], 7);
+            $geo_key = sprintf('%.3f,%.3f', $lat, $lng);
+            $info['lat'] = $lat;
+            $info['lng'] = $lng;
+            $info['loc'] = $cache['geo'][$geo_key] ?? null;
             $photos_with_gps[] = $info;
         } else {
             $photos_without_gps[] = $info;
@@ -226,6 +251,41 @@ if (is_dir($IMAGE_DIR)) {
     }
 
     if ($cache_dirty) save_cache($CACHE_FILE, $cache);
+}
+
+// ── Geocode API endpoint ─────────────────────────────────────
+// Processes up to 5 un-geocoded GPS photos per call (≤1 req/s to Nominatim).
+// Returns {results: {geoKey: location}, done: bool}.
+if (isset($_GET['api']) && $_GET['api'] === 'geocode') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+
+    $lock = $CACHE_FILE . '.lock';
+    if (is_file($lock) && filemtime($lock) < time() - 90) @unlink($lock); // stale lock
+    $fh = @fopen($lock, 'x');
+    if (!$fh) { echo json_encode(['results' => [], 'done' => false]); exit; }
+
+    $results = [];
+    $batch   = 0;
+    foreach ($photos_with_gps as $p) {
+        $key = sprintf('%.3f,%.3f', $p['lat'], $p['lng']);
+        if (array_key_exists($key, $cache['geo'])) continue;
+        $loc = nominatim_reverse($p['lat'], $p['lng']);
+        $cache['geo'][$key] = $loc;
+        $results[$key] = $loc;
+        $batch++;
+        if ($batch >= 5) break;
+        sleep(1);
+    }
+    if ($batch) save_cache($CACHE_FILE, $cache);
+    @fclose($fh); @unlink($lock);
+
+    $remaining = 0;
+    foreach ($photos_with_gps as $p) {
+        if (!array_key_exists(sprintf('%.3f,%.3f', $p['lat'], $p['lng']), $cache['geo'])) $remaining++;
+    }
+    echo json_encode(['results' => $results, 'done' => $remaining === 0]);
+    exit;
 }
 
 // ── JSON API endpoint ────────────────────────────────────────
@@ -492,49 +552,21 @@ function fmtDateTime(s) {
   return s;
 }
 
-// ── Reverse geocoding (Nominatim, lazy, localStorage-cached) ──
-const GEO_LS  = 'photomap_geo_v1';
-const geoCache   = JSON.parse(localStorage.getItem(GEO_LS) || '{}');
-const geoPending = new Set();
-const geoQueue   = [];
-let   geoRunning = false;
-
-function geoKey(lat, lng) { return `${lat.toFixed(3)},${lng.toFixed(3)}`; }
-
-function saveGeoCache() {
-  try { localStorage.setItem(GEO_LS, JSON.stringify(geoCache)); } catch {}
-}
-
-function queueGeocode(lat, lng) {
-  const key = geoKey(lat, lng);
-  if (key in geoCache || geoPending.has(key)) return;
-  geoPending.add(key);
-  geoQueue.push({ key, lat, lng });
-  if (!geoRunning) processGeoQueue();
-}
-
-async function processGeoQueue() {
-  if (!geoQueue.length) { geoRunning = false; return; }
-  geoRunning = true;
-  const { key, lat, lng } = geoQueue.shift();
-  try {
-    const r = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=17`,
-      { headers: { 'Accept-Language': 'de' } }
-    );
-    const d = await r.json();
-    const a = d.address || {};
-    geoCache[key] = a.road || a.pedestrian || a.footway || a.path
-                  || a.neighbourhood || a.suburb || a.city_district
-                  || a.city || a.town || a.village || '';
-    saveGeoCache();
-    renderVirtual();
-  } catch {
-    geoCache[key] = '';
-  } finally {
-    geoPending.delete(key);
-    setTimeout(processGeoQueue, 1100); // Nominatim: max 1 req/s
-  }
+// ── Server-side geocoding poll ────────────────────────────────
+function fetchGeocode() {
+  fetch('?api=geocode')
+    .then(r => r.json())
+    .then(d => {
+      let changed = false;
+      for (const [key, loc] of Object.entries(d.results)) {
+        for (const p of PHOTOS) {
+          if (`${p.lat.toFixed(3)},${p.lng.toFixed(3)}` === key) { p.loc = loc; changed = true; }
+        }
+      }
+      if (changed) renderVirtual();
+      if (!d.done) fetchGeocode();
+    })
+    .catch(() => {});
 }
 
 // ── Sidebar (virtual scroll) ──────────────────────────────────
@@ -555,10 +587,7 @@ function renderItem(item) {
   const dateStr = fmtDateTime(p.date);
   let locHtml;
   if (kind === 'gps') {
-    const key = geoKey(p.lat, p.lng);
-    const loc = geoCache[key];
-    if (loc === undefined) queueGeocode(p.lat, p.lng);
-    locHtml = (loc) ? `<span>${esc(loc)}</span>`
+    locHtml = p.loc ? `<span>${esc(p.loc)}</span>`
                     : `<span><span class="gps-dot">◉</span> ${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>`;
   } else {
     locHtml = '<span>kein GPS</span>';
@@ -754,6 +783,8 @@ function initApp(photos, noGps) {
   TOTAL_H = TOPS[FLAT.length];
 
   renderVirtual();
+
+  if (PHOTOS.some(p => p.loc === null)) fetchGeocode();
 }
 
 fetch('?api=photos')
