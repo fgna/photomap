@@ -350,6 +350,20 @@ if (!isset($cache['geo']) || ($cache['geo_v'] ?? 0) !== $GEO_VER) {
 }
 if (!isset($cache['geo_retry'])) { $cache['geo_retry'] = []; $cache_dirty = true; }
 
+// ── Rebuild API ───────────────────────────────────────────────
+if (isset($_GET['api']) && $_GET['api'] === 'rebuild') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    $n = 0;
+    foreach ($cache['trips'] as &$tc) {
+        $tc['clean'] = false; $tc['dir_mtime'] = 0; $n++;
+    }
+    unset($tc);
+    save_cache($CACHE_FILE, $cache);
+    echo json_encode(['ok' => true, 'trips_reset' => $n], JSON_HEX_TAG);
+    exit;
+}
+
 if (is_dir($TRIPS_DIR)) {
     foreach (scandir($TRIPS_DIR) ?: [] as $d) {
         if ($d[0] !== '.' && is_dir($TRIPS_DIR . $d)) $trip_slugs[] = $d;
@@ -370,20 +384,8 @@ foreach ($trip_slugs as $cidx => $slug) {
     }
     $tc = &$cache['trips'][$slug];
 
-    $dir_mtime   = (int)filemtime($trip_dir);
-    $dir_changed = $tc['dir_mtime'] !== $dir_mtime || empty($tc['files']);
-    if ($dir_changed) {
-        $scanned = scandir($trip_dir) ?: [];
-        usort($scanned, 'strcasecmp');
-        $tc['files']     = array_values($scanned);
-        $tc['dir_mtime'] = $dir_mtime;
-        $tc['clean']     = false;
-        $cache_dirty     = true;
-    }
-
-    // Fast path: skip all per-file syscalls when nothing has changed
-    if (!$dir_changed && ($tc['clean'] ?? false)
-            && isset($tc['photos_gps'], $tc['photos_no_gps'])) {
+    // Fast path: zero syscalls when cache is fully built for this trip
+    if (($tc['clean'] ?? false) && isset($tc['photos_gps'], $tc['photos_no_gps'])) {
         foreach ($tc['photos_gps'] as $cached) {
             $geo_key = sprintf('%.3f,%.3f', $cached['lat'], $cached['lng']);
             $cached['loc']        = $cache['geo'][$geo_key] ?? null;
@@ -398,7 +400,16 @@ foreach ($trip_slugs as $cidx => $slug) {
         continue;
     }
 
-    // Slow path: prune stale EXIF entries, scan files, check thumbnails
+    // Slow path: check dir for changes, prune stale EXIF entries, scan files
+    $dir_mtime   = (int)filemtime($trip_dir);
+    $dir_changed = $tc['dir_mtime'] !== $dir_mtime || empty($tc['files']);
+    if ($dir_changed) {
+        $scanned = scandir($trip_dir) ?: [];
+        usort($scanned, 'strcasecmp');
+        $tc['files']     = array_values($scanned);
+        $tc['dir_mtime'] = $dir_mtime;
+        $cache_dirty     = true;
+    }
     $active_ext = array_flip(array_filter($tc['files'],
         fn($f) => in_array(strtolower(pathinfo($f, PATHINFO_EXTENSION)), $EXTENSIONS)));
     foreach (array_keys($tc['f']) as $cf) {
