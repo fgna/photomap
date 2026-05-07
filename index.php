@@ -530,9 +530,146 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 .empty-state .card p{font-size:12px;color:var(--ink-600);line-height:1.7;}
 .empty-state .card code{font-family:var(--mono);background:var(--ink-100);padding:2px 6px;border-radius:4px;}
 
-@media (max-width: 720px){
-  .sidebar{top:auto;right:12px;left:12px;bottom:12px;width:auto;height:46vh;border-radius:18px}
-  .legend-chip{display:none}
+/* ---------- Tablets and phones (≤900px) ---------- */
+@media (max-width: 900px) {
+  .legend-chip { display: none; }
+  .leaflet-control-zoom { margin: 76px 12px 0 0 !important; }
+}
+
+/* ---------- Phones (≤720px) ---------- */
+@media (max-width: 720px) {
+
+  /* Header — collapse to brand mark + title + count */
+  .app-header { padding: 12px 14px; }
+  .brand { gap: 10px; }
+  .brand h1 { font-size: 22px; }
+  .brand .sub { display: none; }
+  .header-meta { font-size: 10px; gap: 10px; }
+  .header-meta > span:first-child { display: none; }
+  .header-meta .count { font-size: 16px; }
+
+  /* Sidebar as bottom sheet */
+  .sidebar {
+    top: auto;
+    right: 8px;
+    left: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    width: auto;
+    height: 42vh;
+    height: 42dvh;
+    border-radius: 18px;
+  }
+  .sidebar.is-collapsed {
+    transform: translateY(calc(100% + 24px));
+  }
+  .sidebar-head { padding: 14px 16px 10px; }
+  .sidebar-head .title { font-size: 18px; }
+  .sidebar-head .meta { font-size: 9px; }
+  .sidebar-head .close {
+    width: 40px; height: 40px;
+    margin: -6px -8px -6px 0;
+  }
+  .sidebar-body { padding: 4px 8px 12px; }
+  .photo-row { padding: 10px 8px; }
+  .photo-row .thumb { width: 52px; height: 52px; }
+
+  /* Sidebar reopen — float above safe-area, bottom-right */
+  .sidebar-toggle {
+    top: auto;
+    right: 14px;
+    bottom: max(14px, env(safe-area-inset-bottom));
+    width: 52px; height: 52px;
+    border-radius: 999px;
+  }
+  .sidebar-toggle svg { width: 22px; height: 22px; }
+
+  /* Larger marker hit area on touch */
+  .photo-marker { width: 48px; height: 48px; }
+
+  /* Leaflet controls */
+  .leaflet-control-attribution {
+    font-size: 9px !important;
+    padding: 2px 6px !important;
+  }
+  .leaflet-control-zoom { margin: 70px 10px 0 0 !important; }
+  .leaflet-control-zoom a { width: 40px !important; height: 40px !important; line-height: 40px !important; }
+
+  /* ---- Lightbox: fullscreen-ish, single-column ---- */
+  .lightbox .frame {
+    width: 100vw; width: 100dvw;
+    height: 100vh; height: 100dvh;
+    max-width: none; max-height: none;
+    border-radius: 0;
+    margin: 0;
+  }
+  .lb-media .image { background-size: contain; }
+
+  /* Top bar: close (right) + counter (left) */
+  .lb-close {
+    top: max(12px, env(safe-area-inset-top));
+    right: 12px;
+    width: 44px; height: 44px;
+  }
+  .lb-counter {
+    top: max(14px, env(safe-area-inset-top));
+    bottom: auto;
+    left: 14px;
+    padding: 8px 14px;
+  }
+
+  /* Nav arrows — smaller, tucked to edges */
+  .lb-nav {
+    width: 40px; height: 40px;
+    background: color-mix(in oklab, var(--ink) 50%, transparent);
+    color: var(--paper);
+  }
+  .lb-nav:hover { background: color-mix(in oklab, var(--ink) 65%, transparent); transform: translateY(-50%); }
+  .lb-nav.prev { left: 8px; }
+  .lb-nav.next { right: 8px; }
+
+  /* Hide location chip on phone (info accessible via row) */
+  .lb-location { display: none !important; }
+
+  /* Thumb strip — full width row */
+  .lb-thumbs {
+    bottom: max(14px, env(safe-area-inset-bottom));
+    left: 14px; right: 14px;
+    transform: none;
+    justify-content: center;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 6px 8px;
+  }
+  .lb-thumbs::-webkit-scrollbar { display: none; }
+  .lb-thumbs .t { width: 36px; height: 36px; flex-shrink: 0; }
+
+  /* Empty state */
+  .empty-state .card {
+    padding: 28px 24px;
+    margin: 0 16px;
+    max-width: none;
+  }
+  .empty-state .card h2 { font-size: 22px; }
+}
+
+/* ---------- Very narrow phones (≤380px) ---------- */
+@media (max-width: 380px) {
+  .brand h1 { font-size: 20px; }
+  .header-meta { display: none; }
+  .sidebar { height: 50vh; height: 50dvh; }
+}
+
+/* ---------- Landscape phones ---------- */
+@media (max-width: 900px) and (orientation: landscape) and (max-height: 500px) {
+  .sidebar { height: 70vh; height: 70dvh; right: 8px; left: auto; width: 320px; }
+  .sidebar.is-collapsed { transform: translateX(calc(100% + 24px)); }
+  .lb-thumbs { display: none; }
+}
+
+/* ---------- Touch-pointer tweaks ---------- */
+@media (pointer: coarse) {
+  .photo-marker:hover { transform: none; }
+  .lb-nav:hover { transform: translateY(-50%); }
 }
 </style>
 </head>
