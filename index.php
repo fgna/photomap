@@ -488,6 +488,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 .lb-close:hover{background:var(--paper)}
 .lb-close svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5}
 .lb-thumbs{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);display:flex;gap:6px;z-index:2;padding:6px;background:color-mix(in oklab, var(--paper) 90%, transparent);backdrop-filter:blur(8px);border-radius:999px;box-shadow:var(--shadow-2);}
+.lb-location{position:absolute;bottom:24px;right:24px;z-index:2;font-family:var(--mono);font-size:11px;color:var(--paper);background:color-mix(in oklab, var(--ink) 60%, transparent);backdrop-filter:blur(6px);padding:6px 12px;border-radius:999px;letter-spacing:0.08em;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .lb-thumbs .t{width:32px;height:32px;border-radius:999px;background-size:cover;background-position:center;cursor:pointer;opacity:.5;transition:opacity .2s, transform .2s;}
 .lb-thumbs .t:hover{opacity:.85}
 .lb-thumbs .t.is-active{opacity:1;transform:scale(1.12);box-shadow:0 0 0 2px var(--accent)}
@@ -580,6 +581,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
       </button>
       <div class="lb-counter"><span class="now" id="lbNow">1</span>/ <span id="lbTotal">1</span></div>
       <div class="lb-thumbs" id="lbThumbs"></div>
+      <div class="lb-location" id="lbLocation"></div>
     </div>
   </div>
 </div>
@@ -715,7 +717,8 @@ const $lb      = document.getElementById('lightbox');
 const $lbImage = document.getElementById('lbImage');
 const $lbNow   = document.getElementById('lbNow');
 const $lbTotal = document.getElementById('lbTotal');
-const $lbThumbs= document.getElementById('lbThumbs');
+const $lbThumbs   = document.getElementById('lbThumbs');
+const $lbLocation = document.getElementById('lbLocation');
 
 const getList = kind => kind === 'gps' ? PHOTOS : NO_GPS;
 
@@ -747,6 +750,13 @@ function showAt(kind, i) {
   $lbImage.style.backgroundImage = `url('${p.path}')`;
   $lbNow.textContent   = (i+1).toString().padStart(2,'0');
   $lbTotal.textContent = list.length.toString().padStart(2,'0');
+
+  if (kind === 'gps') {
+    $lbLocation.textContent = p.loc || `${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}`;
+    $lbLocation.style.display = '';
+  } else {
+    $lbLocation.style.display = 'none';
+  }
 
   document.querySelectorAll('.photo-marker').forEach(el =>
     el.classList.toggle('is-active', kind === 'gps' && +el.dataset.idx === i));
