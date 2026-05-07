@@ -85,7 +85,7 @@ python build.py [options]
   --no-geocode        Skip Nominatim reverse geocoding
   --force-thumbs      Regenerate all thumbnails even if up to date
   --cache PATH        EXIF + geocoding cache file     (default: ./build-cache.json)
-  --php-file PATH     template.php to extract CSS/JS from (default: ./template.php)
+  --assets PATH       Directory with style.css and app.js  (default: ./assets)
 ```
 
 ## FTP deploy
@@ -138,10 +138,6 @@ Keep `build-cache.json` between builds — it avoids re-reading EXIF and re-geoc
 - **Trip pill bar** — filter the map and sidebar to a single trip; copy a `?trip=slug` link to share
 - **Lightbox** — keyboard-navigable (`←` `→` `Esc`), sliding thumbnail strip, location label
 - **Reverse geocoding** — POI/street names fetched at build time and baked into the HTML
-
-## Do I still need `template.php`?
-
-Yes — `build.py` reads `template.php` at build time to extract the CSS and JavaScript for the site. You don't run it as a web server, but it must stay in the repository alongside `build.py`.
 
 ## Requirements
 

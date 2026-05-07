@@ -191,19 +191,14 @@ _STATIC_INIT = """(function () {
 })();"""
 
 
-def extract_css_js(php_file):
-    content = Path(php_file).read_text(encoding='utf-8')
-    css_m = re.search(r'<style>(.*?)</style>', content, re.DOTALL)
-    # Match the inline app <script> (no attributes), not the CDN <script src="..."> tags
-    js_m  = re.search(r'<script>\n(.*?)\n</script>', content, re.DOTALL)
-    if not css_m or not js_m:
-        raise RuntimeError(f'Could not find <style> or inline <script> block in {php_file}')
-    css = css_m.group(1)
-    js  = js_m.group(1)
+def extract_css_js(assets_dir):
+    assets = Path(assets_dir)
+    css = (assets / 'style.css').read_text(encoding='utf-8')
+    js  = (assets / 'app.js').read_text(encoding='utf-8')
     if _FETCH_BLOCK not in js:
         raise RuntimeError(
-            'Could not find the fetch startup block in the JS — '
-            'index.php may have changed; update _FETCH_BLOCK in build.py'
+            'Could not find the fetch startup block in assets/app.js — '
+            'update _FETCH_BLOCK in build.py'
         )
     js = js.replace(_FETCH_BLOCK, _STATIC_INIT)
     return css, js
@@ -373,7 +368,7 @@ def deploy_ftp(dist_dir, host, user, password, remote_dir, use_tls=False):
 
 # ── Main build ────────────────────────────────────────────────────────────────
 
-def build(trips_dir, output_dir, cache_file, php_file, title, no_geocode, force_thumbs):
+def build(trips_dir, output_dir, cache_file, assets_dir, title, no_geocode, force_thumbs):
     trips_path  = Path(trips_dir)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -499,8 +494,8 @@ def build(trips_dir, output_dir, cache_file, php_file, title, no_geocode, force_
 
     save_cache(cache_file, cache)
 
-    # Extract CSS + JS from index.php, patch startup code
-    css, js = extract_css_js(php_file)
+    # Load CSS + JS from assets/, patch startup code
+    css, js = extract_css_js(assets_dir)
 
     total     = len(all_photos_gps) + len(all_photos_no_gps)
     gps_count = len(all_photos_gps)
@@ -531,7 +526,7 @@ def main():
     ap.add_argument('--trips-dir',    default='./trips',            metavar='PATH', help='Source trips directory')
     ap.add_argument('--output',       default='./dist',             metavar='PATH', help='Output directory')
     ap.add_argument('--cache',        default='./build-cache.json', metavar='PATH', help='EXIF + geocoding cache')
-    ap.add_argument('--php-file',     default='./template.php',     metavar='PATH', help='template.php to extract CSS/JS from')
+    ap.add_argument('--assets',        default='./assets',           metavar='PATH', help='Directory containing style.css and app.js')
     ap.add_argument('--title',        default='Photo Map',                          help='Site title')
     ap.add_argument('--no-geocode',   action='store_true',  help='Skip Nominatim geocoding')
     ap.add_argument('--force-thumbs', action='store_true',  help='Regenerate all thumbnails')
@@ -551,7 +546,7 @@ def main():
         trips_dir    = args.trips_dir,
         output_dir   = args.output,
         cache_file   = args.cache,
-        php_file     = args.php_file,
+        assets_dir   = args.assets,
         title        = args.title,
         no_geocode   = args.no_geocode,
         force_thumbs = args.force_thumbs,
