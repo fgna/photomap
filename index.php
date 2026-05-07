@@ -773,7 +773,10 @@ function initApp(photos, noGps) {
   map.addLayer(markerCluster);
 
   if (PHOTOS.length > 0) {
-    map.fitBounds(L.latLngBounds(PHOTOS.map(p => [p.lat, p.lng])), { padding: [120, 380] });
+    map.fitBounds(L.latLngBounds(PHOTOS.map(p => [p.lat, p.lng])), {
+      paddingTopLeft:     [20, 96],   // 96 = app header height + buffer
+      paddingBottomRight: [364, 24],  // 364 = sidebar (340) + right gap
+    });
   }
 
   // Build virtual scroll index
