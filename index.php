@@ -481,10 +481,60 @@ let lbCurrent = { list: 'gps', i: -1 };
 // ── Utilities ─────────────────────────────────────────────────
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-function fmtDate(s) {
-  if (!s) return '—';
-  const d = new Date(s.replace(' ', 'T'));
-  return isNaN(d) ? s : d.toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' });
+function fmtDateTime(s) {
+  if (!s || s === '—') return '—';
+  // EXIF: "2023:05:12 14:30:00"
+  const exif = s.match(/^(\d{4}):(\d{2}):(\d{2})\s(\d{2}):(\d{2})/);
+  if (exif) return `${exif[1]}/${exif[2]}/${exif[3]} ${exif[4]}:${exif[5]}`;
+  // ISO / filename: "2023-05-12" or "2023-05-12 14:30:00"
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+  if (iso) return iso[4] ? `${iso[1]}/${iso[2]}/${iso[3]} ${iso[4]}:${iso[5]}` : `${iso[1]}/${iso[2]}/${iso[3]}`;
+  return s;
+}
+
+// ── Reverse geocoding (Nominatim, lazy, localStorage-cached) ──
+const GEO_LS  = 'photomap_geo_v1';
+const geoCache   = JSON.parse(localStorage.getItem(GEO_LS) || '{}');
+const geoPending = new Set();
+const geoQueue   = [];
+let   geoRunning = false;
+
+function geoKey(lat, lng) { return `${lat.toFixed(3)},${lng.toFixed(3)}`; }
+
+function saveGeoCache() {
+  try { localStorage.setItem(GEO_LS, JSON.stringify(geoCache)); } catch {}
+}
+
+function queueGeocode(lat, lng) {
+  const key = geoKey(lat, lng);
+  if (key in geoCache || geoPending.has(key)) return;
+  geoPending.add(key);
+  geoQueue.push({ key, lat, lng });
+  if (!geoRunning) processGeoQueue();
+}
+
+async function processGeoQueue() {
+  if (!geoQueue.length) { geoRunning = false; return; }
+  geoRunning = true;
+  const { key, lat, lng } = geoQueue.shift();
+  try {
+    const r = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=17`,
+      { headers: { 'Accept-Language': 'de' } }
+    );
+    const d = await r.json();
+    const a = d.address || {};
+    geoCache[key] = a.road || a.pedestrian || a.footway || a.path
+                  || a.neighbourhood || a.suburb || a.city_district
+                  || a.city || a.town || a.village || '';
+    saveGeoCache();
+    renderVirtual();
+  } catch {
+    geoCache[key] = '';
+  } finally {
+    geoPending.delete(key);
+    setTimeout(processGeoQueue, 1100); // Nominatim: max 1 req/s
+  }
 }
 
 // ── Sidebar (virtual scroll) ──────────────────────────────────
@@ -502,12 +552,20 @@ function renderItem(item) {
   }
   const { kind, idx, p } = item;
   const active = lbCurrent.list === kind && lbCurrent.i === idx ? ' is-active' : '';
-  const meta = kind === 'gps'
-    ? `<span><span class="gps-dot">◉</span> ${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>`
-    : `<span>${fmtDate(p.date)}</span><span>kein GPS</span>`;
+  const dateStr = fmtDateTime(p.date);
+  let locHtml;
+  if (kind === 'gps') {
+    const key = geoKey(p.lat, p.lng);
+    const loc = geoCache[key];
+    if (loc === undefined) queueGeocode(p.lat, p.lng);
+    locHtml = (loc) ? `<span>${esc(loc)}</span>`
+                    : `<span><span class="gps-dot">◉</span> ${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>`;
+  } else {
+    locHtml = '<span>kein GPS</span>';
+  }
   return `<div class="photo-row${kind === 'nogps' ? ' no-gps' : ''}${active}" data-kind="${kind}" data-idx="${idx}">
     <div class="thumb" style="background-image:url('${p.thumb}')"></div>
-    <div class="info"><div class="name">${esc(p.name)}</div><div class="meta">${meta}</div></div>
+    <div class="info"><div class="name">${esc(dateStr)}</div><div class="meta">${locHtml}</div></div>
   </div>`;
 }
 
