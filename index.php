@@ -19,6 +19,28 @@ $RESIZED_MAX = 2048;        // max dimension for display images (lightbox) in px
 $EXTENSIONS = ['jpg', 'jpeg', 'webp', 'png', 'heic', 'tiff', 'tif'];
 $CACHE_VER  = 3;
 
+// ── Thumbnail generation (shared) ───────────────────────────
+// Returns true on success, false when GD cannot decode the format.
+function make_thumbnail(string $source, string $dest, int $size): bool {
+    $ext     = strtolower(pathinfo($source, PATHINFO_EXTENSION));
+    $src_img = match(true) {
+        in_array($ext, ['jpg', 'jpeg']) => @imagecreatefromjpeg($source),
+        $ext === 'png'                  => @imagecreatefrompng($source),
+        $ext === 'webp'                 => @imagecreatefromwebp($source),
+        default                         => false,
+    };
+    if (!$src_img) return false;
+    $sw = imagesx($src_img); $sh = imagesy($src_img);
+    if ($sw > $sh) { $ox = ($sw - $sh) / 2; $oy = 0; $sq = $sh; }
+    else            { $ox = 0; $oy = ($sh - $sw) / 2; $sq = $sw; }
+    $dst = imagecreatetruecolor($size, $size);
+    imagecopyresampled($dst, $src_img, 0, 0, (int)$ox, (int)$oy, $size, $size, (int)$sq, (int)$sq);
+    imagejpeg($dst, $dest, 85);
+    imagedestroy($src_img);
+    imagedestroy($dst);
+    return true;
+}
+
 // ── Thumbnail endpoint ───────────────────────────────────────
 if (isset($_GET['thumb'])) {
     $file   = basename($_GET['thumb']);
@@ -30,24 +52,7 @@ if (isset($_GET['thumb'])) {
     $imtime = (int)filemtime($source);
 
     if (!is_file($thumb) || (int)filemtime($thumb) < $imtime) {
-        $ext     = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-        $src_img = match(true) {
-            in_array($ext, ['jpg', 'jpeg']) => @imagecreatefromjpeg($source),
-            $ext === 'png'                  => @imagecreatefrompng($source),
-            $ext === 'webp'                 => @imagecreatefromwebp($source),
-            default                         => false,
-        };
-        if ($src_img) {
-            $sw = imagesx($src_img); $sh = imagesy($src_img);
-            if ($sw > $sh) { $ox = ($sw - $sh) / 2; $oy = 0; $sq = $sh; }
-            else            { $ox = 0; $oy = ($sh - $sw) / 2; $sq = $sw; }
-            $dst = imagecreatetruecolor($THUMB_SIZE, $THUMB_SIZE);
-            imagecopyresampled($dst, $src_img, 0, 0, (int)$ox, (int)$oy,
-                               $THUMB_SIZE, $THUMB_SIZE, (int)$sq, (int)$sq);
-            imagejpeg($dst, $thumb, 85);
-            imagedestroy($src_img);
-            imagedestroy($dst);
-        } else {
+        if (!make_thumbnail($source, $thumb, $THUMB_SIZE)) {
             // Format unsupported by GD — redirect to original
             header('Location: images/' . rawurlencode($file), true, 302);
             exit;
@@ -294,6 +299,13 @@ if (is_dir($IMAGE_DIR)) {
             $cache_dirty = true;
         }
 
+        // Eagerly generate thumbnail so it is ready before the browser requests it.
+        if (!is_dir($THUMB_DIR)) @mkdir($THUMB_DIR, 0755, true);
+        $thumb_file = $THUMB_DIR . md5($file) . '.jpg';
+        if (!is_file($thumb_file) || (int)filemtime($thumb_file) < $mtime) {
+            make_thumbnail($full_path, $thumb_file, $THUMB_SIZE);
+        }
+
         $web_path   = '?full=' . rawurlencode($file);
         $thumb_url  = '?thumb=' . rawurlencode($file);
         $name_display = ucwords(str_replace(['_', '-'], ' ', pathinfo($file, PATHINFO_FILENAME)));
@@ -316,49 +328,55 @@ if (is_dir($IMAGE_DIR)) {
     if ($cache_dirty) save_cache($CACHE_FILE, $cache);
 }
 
-// ── Geocode API endpoint ─────────────────────────────────────
-// Processes up to 5 un-geocoded GPS photos per call (≤1 req/s to Nominatim).
-// Returns {results: {geoKey: location}, done: bool}.
-if (isset($_GET['api']) && $_GET['api'] === 'geocode') {
-    header('Content-Type: application/json; charset=utf-8');
-    header('Cache-Control: no-store');
-
-    $lock = $CACHE_FILE . '.lock';
-    if (is_file($lock) && filemtime($lock) < time() - 90) @unlink($lock); // stale lock
-    $fh = @fopen($lock, 'x');
-    if (!$fh) { echo json_encode(['results' => [], 'done' => false]); exit; }
-
-    $results = [];
-    $batch   = 0;
-    foreach ($photos_with_gps as $p) {
-        $key = sprintf('%.3f,%.3f', $p['lat'], $p['lng']);
-        if (array_key_exists($key, $cache['geo'])) continue;
-        $loc = nominatim_reverse($p['lat'], $p['lng']);
-        $cache['geo'][$key] = $loc;
-        $results[$key] = $loc;
-        $batch++;
-        if ($batch >= 5) break;
-        sleep(1);
-    }
-    if ($batch) save_cache($CACHE_FILE, $cache);
-    @fclose($fh); @unlink($lock);
-
-    $remaining = 0;
-    foreach ($photos_with_gps as $p) {
-        if (!array_key_exists(sprintf('%.3f,%.3f', $p['lat'], $p['lng']), $cache['geo'])) $remaining++;
-    }
-    echo json_encode(['results' => $results, 'done' => $remaining === 0]);
-    exit;
-}
-
 // ── JSON API endpoint ────────────────────────────────────────
 if (isset($_GET['api']) && $_GET['api'] === 'photos') {
-    header('Content-Type: application/json; charset=utf-8');
-    header('Cache-Control: public, max-age=60, stale-while-revalidate=3600');
-    echo json_encode(
-        ['photos' => $photos_with_gps, 'no_gps' => $photos_without_gps],
+    // Determine whether any GPS photo still needs geocoding.
+    $needs_geocode = false;
+    foreach ($photos_with_gps as $p) {
+        if (!array_key_exists(sprintf('%.3f,%.3f', $p['lat'], $p['lng']), $cache['geo'])) {
+            $needs_geocode = true;
+            break;
+        }
+    }
+
+    $json = json_encode(
+        ['photos' => $photos_with_gps, 'no_gps' => $photos_without_gps, 'geocoding_pending' => $needs_geocode],
         JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG
     );
+
+    header('Content-Type: application/json; charset=utf-8');
+    // No-store when geocoding is still pending so the next load always gets fresh data.
+    header('Cache-Control: ' . ($needs_geocode ? 'no-store' : 'public, max-age=60, stale-while-revalidate=3600'));
+    header('Content-Length: ' . strlen($json));
+    echo $json;
+
+    // Close the connection so the browser gets the response immediately,
+    // then finish geocoding in the background (≤1 req/s per Nominatim policy).
+    if ($needs_geocode) {
+        ignore_user_abort(true);
+        if (function_exists('fastcgi_finish_request')) {
+            fastcgi_finish_request();
+        } else {
+            @ob_end_flush();
+            flush();
+        }
+
+        $lock = $CACHE_FILE . '.lock';
+        if (is_file($lock) && filemtime($lock) < time() - 90) @unlink($lock);
+        $fh = @fopen($lock, 'x');
+        if ($fh) {
+            set_time_limit(0);
+            foreach ($photos_with_gps as $p) {
+                $key = sprintf('%.3f,%.3f', $p['lat'], $p['lng']);
+                if (array_key_exists($key, $cache['geo'])) continue;
+                $cache['geo'][$key] = nominatim_reverse($p['lat'], $p['lng']);
+                sleep(1);
+            }
+            save_cache($CACHE_FILE, $cache);
+            @fclose($fh);
+            @unlink($lock);
+        }
+    }
     exit;
 }
 
@@ -615,21 +633,25 @@ function fmtDateTime(s) {
   return s;
 }
 
-// ── Server-side geocoding poll ────────────────────────────────
-function fetchGeocode() {
-  fetch('?api=geocode')
-    .then(r => r.json())
-    .then(d => {
-      let changed = false;
-      for (const [key, loc] of Object.entries(d.results)) {
-        for (const p of PHOTOS) {
-          if (`${p.lat.toFixed(3)},${p.lng.toFixed(3)}` === key) { p.loc = loc; changed = true; }
+// ── Geocoding refresh ─────────────────────────────────────────
+// When the server still has photos to geocode it signals geocoding_pending=true
+// and does the work in the background after sending the response.
+// We schedule one re-fetch so the UI picks up the completed locations.
+function scheduleGeocodeRefresh() {
+  setTimeout(() => {
+    fetch('?api=photos', { cache: 'reload' })
+      .then(r => r.json())
+      .then(d => {
+        let changed = false;
+        for (const updated of d.photos) {
+          const p = PHOTOS.find(q => q.file === updated.file);
+          if (p && updated.loc !== p.loc) { p.loc = updated.loc; changed = true; }
         }
-      }
-      if (changed) renderVirtual();
-      if (!d.done) fetchGeocode();
-    })
-    .catch(() => {});
+        if (changed) renderVirtual();
+        if (d.geocoding_pending) scheduleGeocodeRefresh();
+      })
+      .catch(() => {});
+  }, 6000);
 }
 
 // ── Sidebar (virtual scroll) ──────────────────────────────────
@@ -858,12 +880,11 @@ function initApp(photos, noGps) {
 
   renderVirtual();
 
-  if (PHOTOS.some(p => p.loc === null)) fetchGeocode();
 }
 
 fetch('?api=photos')
   .then(r => r.json())
-  .then(d => initApp(d.photos, d.no_gps))
+  .then(d => { initApp(d.photos, d.no_gps); if (d.geocoding_pending) scheduleGeocodeRefresh(); })
   .catch(() => {
     $body.innerHTML = '<p style="padding:20px 10px;font-size:11px;color:var(--ink-600)">Error loading photos.</p>';
   });
