@@ -85,8 +85,33 @@ python build.py [options]
   --no-geocode        Skip Nominatim reverse geocoding
   --force-thumbs      Regenerate all thumbnails even if up to date
   --cache PATH        EXIF + geocoding cache file     (default: ./build-cache.json)
-  --php-file PATH     template.php to extract CSS/JS from (default: ./template.php)
+  --assets PATH       Directory with style.css and app.js  (default: ./assets)
 ```
+
+## FTP deploy
+
+Pass FTP credentials to upload `dist/` to your web server immediately after building:
+
+```bash
+python build.py --ftp-host ftp.example.com --ftp-user myuser --ftp-dir /public_html
+# Password is prompted securely if not provided
+```
+
+Or supply the password via environment variable to avoid the prompt (useful in scripts):
+
+```bash
+FTP_PASSWORD=secret python build.py --ftp-host ftp.example.com --ftp-user myuser --ftp-dir /public_html
+```
+
+| Flag | Description |
+|---|---|
+| `--ftp-host HOST` | FTP server hostname |
+| `--ftp-user USER` | FTP username |
+| `--ftp-password PASS` | FTP password (or use `FTP_PASSWORD` env var) |
+| `--ftp-dir PATH` | Remote directory to upload into (default: `/`) |
+| `--ftp-tls` | Use FTPS (FTP over TLS) for encrypted transfer |
+
+The entire `dist/` directory is uploaded, creating remote subdirectories as needed.
 
 ## Geocoding
 
@@ -113,10 +138,6 @@ Keep `build-cache.json` between builds — it avoids re-reading EXIF and re-geoc
 - **Trip pill bar** — filter the map and sidebar to a single trip; copy a `?trip=slug` link to share
 - **Lightbox** — keyboard-navigable (`←` `→` `Esc`), sliding thumbnail strip, location label
 - **Reverse geocoding** — POI/street names fetched at build time and baked into the HTML
-
-## Do I still need `template.php`?
-
-Yes — `build.py` reads `template.php` at build time to extract the CSS and JavaScript for the site. You don't run it as a web server, but it must stay in the repository alongside `build.py`.
 
 ## Requirements
 

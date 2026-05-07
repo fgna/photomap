@@ -13,6 +13,8 @@ Usage:
 """
 
 import argparse
+import ftplib
+import getpass
 import hashlib
 import json
 import os
@@ -166,14 +168,13 @@ def nominatim_reverse(lat, lng):
         return None
 
 
-# ── JS/CSS extraction from index.php ─────────────────────────────────────────
+# ── JS/CSS extraction ────────────────────────────────────────────────────────
 
-# Exact fetch block to replace (must match index.php verbatim)
+# Exact fetch block to replace (must match assets/app.js verbatim)
 _FETCH_BLOCK = """fetch('?api=photos')
   .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
   .then(d => {
     initApp(d.photos, d.no_gps, d.trips ?? [], d.active_trip ?? null);
-    if (d.geocoding_pending) scheduleGeocodeRefresh();
   })
   .catch(err => {
     const p = document.createElement('p');
@@ -189,19 +190,15 @@ _STATIC_INIT = """(function () {
 })();"""
 
 
-def extract_css_js(php_file):
-    content = Path(php_file).read_text(encoding='utf-8')
-    css_m = re.search(r'<style>(.*?)</style>', content, re.DOTALL)
-    # Match the inline app <script> (no attributes), not the CDN <script src="..."> tags
-    js_m  = re.search(r'<script>\n(.*?)\n</script>', content, re.DOTALL)
-    if not css_m or not js_m:
-        raise RuntimeError(f'Could not find <style> or inline <script> block in {php_file}')
-    css = css_m.group(1)
-    js  = js_m.group(1)
+def extract_css_js(assets_dir):
+    assets = Path(assets_dir)
+    # Normalise line endings so _FETCH_BLOCK matching works on Windows too
+    css = (assets / 'style.css').read_text(encoding='utf-8').replace('\r\n', '\n')
+    js  = (assets / 'app.js').read_text(encoding='utf-8').replace('\r\n', '\n')
     if _FETCH_BLOCK not in js:
         raise RuntimeError(
-            'Could not find the fetch startup block in the JS — '
-            'index.php may have changed; update _FETCH_BLOCK in build.py'
+            'Could not find the fetch startup block in assets/app.js — '
+            'update _FETCH_BLOCK in build.py'
         )
     js = js.replace(_FETCH_BLOCK, _STATIC_INIT)
     return css, js
@@ -234,7 +231,7 @@ _HEADER = """\
 <header class="app-header">
   <div class="brand">
     <span class="mark"></span>
-    <h1>{title}<em>.</em></h1>
+    <h1 id="appTitle">{title}<em>.</em></h1>
     <span class="sub">Photo Map · {year}</span>
   </div>
   <div class="header-meta">
@@ -257,8 +254,8 @@ _SIDEBAR = """\
 <aside class="sidebar" id="sidebar" aria-label="Photo index">
   <div class="sidebar-head">
     <div>
-      <div class="title">Index<em>.</em></div>
-      <div class="meta">{total} photo{s} · {gps_count} with GPS</div>
+      <div class="title" id="sidebarTitle">Index<em>.</em></div>
+      <div class="meta" id="sidebarMeta">{total} photo{s}</div>
     </div>
     <button class="close" id="sidebarClose" aria-label="Close sidebar">
       <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
@@ -322,9 +319,56 @@ def render_html(title, year, total, gps_count, css, js, data, has_photos):
     return f'{head}\n{header}\n{body}\n{script}\n</body>\n</html>\n'
 
 
+# ── FTP deploy ───────────────────────────────────────────────────────────────
+
+def _ftp_makedirs(ftp, remote_dir):
+    """Create remote directory tree, ignoring already-exists errors."""
+    parts = remote_dir.replace('\\', '/').split('/')
+    path = ''
+    for part in parts:
+        if not part:
+            continue
+        path += '/' + part
+        try:
+            ftp.mkd(path)
+        except ftplib.error_perm:
+            pass  # already exists
+
+
+def deploy_ftp(dist_dir, host, user, password, remote_dir, use_tls=False):
+    dist_path  = Path(dist_dir).resolve()
+    remote_dir = '/' + remote_dir.strip('/')
+
+    print(f'\nConnecting to {host} ...')
+    FTPClass = ftplib.FTP_TLS if use_tls else ftplib.FTP
+    with FTPClass() as ftp:
+        ftp.connect(host)
+        ftp.login(user, password)
+        if use_tls:
+            ftp.prot_p()
+        ftp.set_pasv(True)
+        print(f'Connected. Uploading to {remote_dir} ...')
+
+        uploaded = 0
+        for local in sorted(dist_path.rglob('*')):
+            rel      = local.relative_to(dist_path)
+            remote   = remote_dir + '/' + str(rel).replace(os.sep, '/')
+
+            if local.is_dir():
+                _ftp_makedirs(ftp, remote)
+            else:
+                _ftp_makedirs(ftp, remote_dir + '/' + str(rel.parent).replace(os.sep, '/'))
+                with open(local, 'rb') as f:
+                    ftp.storbinary(f'STOR {remote}', f)
+                print(f'  {rel}')
+                uploaded += 1
+
+    print(f'Uploaded {uploaded} file(s) to {host}{remote_dir}')
+
+
 # ── Main build ────────────────────────────────────────────────────────────────
 
-def build(trips_dir, output_dir, cache_file, php_file, title, no_geocode, force_thumbs):
+def build(trips_dir, output_dir, cache_file, assets_dir, title, no_geocode, force_thumbs):
     trips_path  = Path(trips_dir)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -450,8 +494,8 @@ def build(trips_dir, output_dir, cache_file, php_file, title, no_geocode, force_
 
     save_cache(cache_file, cache)
 
-    # Extract CSS + JS from index.php, patch startup code
-    css, js = extract_css_js(php_file)
+    # Load CSS + JS from assets/, patch startup code
+    css, js = extract_css_js(assets_dir)
 
     total     = len(all_photos_gps) + len(all_photos_no_gps)
     gps_count = len(all_photos_gps)
@@ -482,21 +526,48 @@ def main():
     ap.add_argument('--trips-dir',    default='./trips',            metavar='PATH', help='Source trips directory')
     ap.add_argument('--output',       default='./dist',             metavar='PATH', help='Output directory')
     ap.add_argument('--cache',        default='./build-cache.json', metavar='PATH', help='EXIF + geocoding cache')
-    ap.add_argument('--php-file',     default='./template.php',     metavar='PATH', help='template.php to extract CSS/JS from')
+    ap.add_argument('--assets',        default='./assets',           metavar='PATH', help='Directory containing style.css and app.js')
     ap.add_argument('--title',        default='Photo Map',                          help='Site title')
     ap.add_argument('--no-geocode',   action='store_true',  help='Skip Nominatim geocoding')
     ap.add_argument('--force-thumbs', action='store_true',  help='Regenerate all thumbnails')
+
+    ftp = ap.add_argument_group('FTP deploy (optional)')
+    ftp.add_argument('--ftp-host',     metavar='HOST', help='FTP hostname')
+    ftp.add_argument('--ftp-user',     metavar='USER', help='FTP username')
+    ftp.add_argument('--ftp-password', metavar='PASS',
+                     help='FTP password (or set FTP_PASSWORD env var; prompted if omitted)')
+    ftp.add_argument('--ftp-dir',      metavar='PATH', default='/',
+                     help='Remote directory to upload into (default: /)')
+    ftp.add_argument('--ftp-tls',      action='store_true', help='Use FTPS (FTP over TLS)')
+
     args = ap.parse_args()
 
     build(
         trips_dir    = args.trips_dir,
         output_dir   = args.output,
         cache_file   = args.cache,
-        php_file     = args.php_file,
+        assets_dir   = args.assets,
         title        = args.title,
         no_geocode   = args.no_geocode,
         force_thumbs = args.force_thumbs,
     )
+
+    if args.ftp_host:
+        if not args.ftp_user:
+            ap.error('--ftp-user is required when --ftp-host is set')
+        password = (
+            args.ftp_password
+            or os.environ.get('FTP_PASSWORD')
+            or getpass.getpass(f'FTP password for {args.ftp_user}@{args.ftp_host}: ')
+        )
+        deploy_ftp(
+            dist_dir   = args.output,
+            host       = args.ftp_host,
+            user       = args.ftp_user,
+            password   = password,
+            remote_dir = args.ftp_dir,
+            use_tls    = args.ftp_tls,
+        )
 
 
 if __name__ == '__main__':
