@@ -1,77 +1,71 @@
 <?php
 // ============================================================
-//  Photo Map — index.php
-//  Single-file PHP app: reads photos from ./images/, extracts
-//  GPS EXIF data, and renders an interactive Leaflet map.
+//  Photo Map — index.php  (multi-trip)
 // ============================================================
 
-// ── Configuration ────────────────────────────────────────────
-$TRIP_NAME  = 'Photo Map';  // shown in browser title and page header
-$MAP_LAT    = 0.0;          // initial map centre (overridden by fitBounds once photos load)
-$MAP_LNG    = 0.0;
-
-$IMAGE_DIR  = __DIR__ . '/images/';
+// ── Configuration ─────────────────────────────────────────────
+$TRIP_NAME  = 'Photo Map';
+$TRIPS_DIR  = __DIR__ . '/trips/';
 $CACHE_FILE = __DIR__ . '/.photomap-cache.json';
-$THUMB_DIR   = __DIR__ . '/.thumbnails/';
-$THUMB_SIZE  = 240;         // square thumbnail px
-$RESIZED_DIR = __DIR__ . '/.resized/';
-$RESIZED_MAX = 2048;        // max dimension for display images (lightbox) in px
-$DELETE_ORIGINALS_BELOW_MB = 0; // delete original after resize when free space < N MB (0 = never)
-$EXTENSIONS = ['jpg', 'jpeg', 'webp', 'png', 'heic', 'tiff', 'tif'];
-$CACHE_VER  = 5;
+$THUMB_SIZE  = 240;
+$RESIZED_MAX = 2048;
+$DELETE_ORIGINALS_BELOW_MB = 0;
+$EXTENSIONS  = ['jpg', 'jpeg', 'webp', 'png', 'heic', 'tiff', 'tif'];
+$CACHE_VER   = 6;
+$TRIP_COLORS = ['#6D5AD7','#D4604A','#3AA46E','#C44F7A','#3AA0A8','#C8921C','#4F64D4','#7A9C4F'];
 
-// ── Thumbnail generation (shared) ───────────────────────────
-// Returns true on success, false when GD cannot decode the format.
-function make_thumbnail(string $source, string $dest, int $size): bool {
-    $ext     = strtolower(pathinfo($source, PATHINFO_EXTENSION));
-    $src_img = match(true) {
-        in_array($ext, ['jpg', 'jpeg']) => @imagecreatefromjpeg($source),
-        $ext === 'png'                  => @imagecreatefrompng($source),
-        $ext === 'webp'                 => @imagecreatefromwebp($source),
+// ── Image helpers ─────────────────────────────────────────────
+
+function load_gd_image(string $path) {
+    $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+    return match(true) {
+        in_array($ext, ['jpg', 'jpeg']) => @imagecreatefromjpeg($path),
+        $ext === 'png'                  => @imagecreatefrompng($path),
+        $ext === 'webp'                 => @imagecreatefromwebp($path),
         default                         => false,
     };
+}
+
+function atomic_jpeg_write($img, string $dest, int $quality): bool {
+    $tmp = $dest . '.tmp.' . getmypid();
+    $ok  = imagejpeg($img, $tmp, $quality);
+    if (!$ok || !rename($tmp, $dest)) { @unlink($tmp); return false; }
+    return true;
+}
+
+function make_thumbnail(string $source, string $dest, int $size): bool {
+    $src_img = load_gd_image($source);
     if (!$src_img) return false;
     $sw = imagesx($src_img); $sh = imagesy($src_img);
     if ($sw > $sh) { $ox = ($sw - $sh) / 2; $oy = 0; $sq = $sh; }
     else            { $ox = 0; $oy = ($sh - $sw) / 2; $sq = $sw; }
     $dst = imagecreatetruecolor($size, $size);
     imagecopyresampled($dst, $src_img, 0, 0, (int)$ox, (int)$oy, $size, $size, (int)$sq, (int)$sq);
-    $tmp = $dest . '.tmp.' . getmypid();
-    $ok  = imagejpeg($dst, $tmp, 85);
     imagedestroy($src_img);
+    $ok = atomic_jpeg_write($dst, $dest, 85);
     imagedestroy($dst);
-    if (!$ok || !rename($tmp, $dest)) { @unlink($tmp); return false; } // #1
-    return true;
+    return $ok;
 }
 
-// Returns true on success, false when GD cannot decode the format.
 function make_resized(string $source, string $dest, int $max): bool {
-    $ext     = strtolower(pathinfo($source, PATHINFO_EXTENSION));
-    $src_img = match(true) {
-        in_array($ext, ['jpg', 'jpeg']) => @imagecreatefromjpeg($source),
-        $ext === 'png'                  => @imagecreatefrompng($source),
-        $ext === 'webp'                 => @imagecreatefromwebp($source),
-        default                         => false,
-    };
+    $src_img = load_gd_image($source);
     if (!$src_img) return false;
     $sw = imagesx($src_img); $sh = imagesy($src_img);
-    $tmp = $dest . '.tmp.' . getmypid();
     if ($sw > $max || $sh > $max) {
         if ($sw > $sh) { $dw = $max; $dh = (int)round($sh * $max / $sw); }
         else            { $dh = $max; $dw = (int)round($sw * $max / $sh); }
         $dst = imagecreatetruecolor($dw, $dh);
         imagecopyresampled($dst, $src_img, 0, 0, 0, 0, $dw, $dh, $sw, $sh);
-        $ok = imagejpeg($dst, $tmp, 85);
+        imagedestroy($src_img);
+        $ok = atomic_jpeg_write($dst, $dest, 85);
         imagedestroy($dst);
     } else {
-        $ok = imagejpeg($src_img, $tmp, 92);
+        $ok = atomic_jpeg_write($src_img, $dest, 92);
+        imagedestroy($src_img);
     }
-    imagedestroy($src_img);
-    if (!$ok || !rename($tmp, $dest)) { @unlink($tmp); return false; } // #1
-    return true;
+    return $ok;
 }
 
-// Sends cached-image headers and exits with 304 if the client already has this version.
 function serve_image(string $cached_path, int $source_mtime, string $etag): void {
     header('Content-Type: image/jpeg');
     header('Cache-Control: public, max-age=31536000, immutable');
@@ -88,60 +82,67 @@ function serve_image(string $cached_path, int $source_mtime, string $etag): void
     exit;
 }
 
-// ── Thumbnail endpoint ───────────────────────────────────────
+// ── Thumbnail endpoint ────────────────────────────────────────
 if (isset($_GET['thumb'])) {
-    $file   = basename($_GET['thumb']);
-    $source = $IMAGE_DIR . $file;
-    $real   = realpath($source);
-    if ($real === false || !str_starts_with($real, realpath($IMAGE_DIR) . DIRECTORY_SEPARATOR)) {
+    $slug       = preg_replace('/[^a-zA-Z0-9_-]/', '', $_GET['trip'] ?? '');
+    $file       = basename($_GET['thumb'] ?? '');
+    $trips_real = realpath($TRIPS_DIR);
+    $trip_real  = ($slug && $trips_real) ? realpath($TRIPS_DIR . $slug) : false;
+    if (!$file || $trip_real === false
+            || !str_starts_with($trip_real, $trips_real . DIRECTORY_SEPARATOR)) {
         http_response_code(404); exit;
     }
-
-    if (!is_dir($THUMB_DIR) && !@mkdir($THUMB_DIR, 0755, true)) { http_response_code(500); exit; }
-    $thumb  = $THUMB_DIR . md5($file) . '.jpg';
+    $source = $trip_real . DIRECTORY_SEPARATOR . $file;
+    $real   = realpath($source);
+    if ($real === false || !str_starts_with($real, $trip_real . DIRECTORY_SEPARATOR)) {
+        http_response_code(404); exit;
+    }
+    $thumb_dir = $trip_real . DIRECTORY_SEPARATOR . '.thumbnails' . DIRECTORY_SEPARATOR;
+    if (!is_dir($thumb_dir) && !@mkdir($thumb_dir, 0755, true)) { http_response_code(500); exit; }
+    $thumb  = $thumb_dir . md5($file) . '.jpg';
     $imtime = (int)filemtime($source);
-
     if (!is_file($thumb) || (int)filemtime($thumb) < $imtime) {
         if (!make_thumbnail($source, $thumb, $THUMB_SIZE)) {
-            // Format unsupported by GD — redirect to original
-            header('Location: images/' . rawurlencode($file), true, 302);
+            header('Location: trips/' . rawurlencode($slug) . '/' . rawurlencode($file), true, 302);
             exit;
         }
     }
-
-    serve_image($thumb, $imtime, md5($file . $imtime));
+    serve_image($thumb, $imtime, md5($slug . $file . $imtime));
 }
 
-// ── Display-size image endpoint ──────────────────────────────
+// ── Display-size image endpoint ───────────────────────────────
 if (isset($_GET['full'])) {
-    $file    = basename($_GET['full']);
-    $source  = $IMAGE_DIR . $file;
-    $real    = realpath($source);
-    if ($real === false || !str_starts_with($real, realpath($IMAGE_DIR) . DIRECTORY_SEPARATOR)) {
+    $slug       = preg_replace('/[^a-zA-Z0-9_-]/', '', $_GET['trip'] ?? '');
+    $file       = basename($_GET['full'] ?? '');
+    $trips_real = realpath($TRIPS_DIR);
+    $trip_real  = ($slug && $trips_real) ? realpath($TRIPS_DIR . $slug) : false;
+    if (!$file || $trip_real === false
+            || !str_starts_with($trip_real, $trips_real . DIRECTORY_SEPARATOR)) {
         http_response_code(404); exit;
     }
-
-    if (!is_dir($RESIZED_DIR) && !@mkdir($RESIZED_DIR, 0755, true)) { http_response_code(500); exit; }
-    $resized = $RESIZED_DIR . md5($file) . '.jpg';
+    $source = $trip_real . DIRECTORY_SEPARATOR . $file;
+    $real   = realpath($source);
+    if ($real === false || !str_starts_with($real, $trip_real . DIRECTORY_SEPARATOR)) {
+        http_response_code(404); exit;
+    }
+    $resized_dir = $trip_real . DIRECTORY_SEPARATOR . '.resized' . DIRECTORY_SEPARATOR;
+    if (!is_dir($resized_dir) && !@mkdir($resized_dir, 0755, true)) { http_response_code(500); exit; }
+    $resized = $resized_dir . md5($file) . '.jpg';
     $imtime  = (int)filemtime($source);
-
     if (!is_file($resized) || (int)filemtime($resized) < $imtime) {
         if (!make_resized($source, $resized, $RESIZED_MAX)) {
-            header('Location: images/' . rawurlencode($file), true, 302);
+            header('Location: trips/' . rawurlencode($slug) . '/' . rawurlencode($file), true, 302);
             exit;
         }
     }
-
-    // Delete original once a valid resized copy exists and space is tight
     if ($DELETE_ORIGINALS_BELOW_MB > 0 && is_file($resized) && is_file($source)) {
         $free_mb = @disk_free_space(__DIR__) / 1048576;
         if ($free_mb !== false && $free_mb < $DELETE_ORIGINALS_BELOW_MB) @unlink($source);
     }
-
-    serve_image($resized, $imtime, md5($file . $imtime));
+    serve_image($resized, $imtime, md5($slug . $file . $imtime));
 }
 
-// ── GPS-Helfer ───────────────────────────────────────────────
+// ── GPS helpers ───────────────────────────────────────────────
 
 function rational_to_float(mixed $v): float {
     if (is_array($v))  return $v[1] ? (float)$v[0] / (float)$v[1] : 0.0;
@@ -172,12 +173,12 @@ function gps_from_raw(string $path): ?array {
     if ($tiff_start + 8 > $raw_len) return null;
     $byte_order = substr($raw, $tiff_start, 2);
     $le         = ($byte_order === 'II');
-    $read16     = function($o) use (&$raw, $tiff_start, $raw_len, $le): int {
+    $read16     = function($o) use ($raw, $tiff_start, $raw_len, $le): int {
         if ($tiff_start + $o + 2 > $raw_len) return 0;
         return $le ? unpack('v', substr($raw, $tiff_start + $o, 2))[1]
                    : unpack('n', substr($raw, $tiff_start + $o, 2))[1];
     };
-    $read32     = function($o) use (&$raw, $tiff_start, $raw_len, $le): int {
+    $read32     = function($o) use ($raw, $tiff_start, $raw_len, $le): int {
         if ($tiff_start + $o + 4 > $raw_len) return 0;
         return $le ? unpack('V', substr($raw, $tiff_start + $o, 4))[1]
                    : unpack('N', substr($raw, $tiff_start + $o, 4))[1];
@@ -230,7 +231,6 @@ function gps_from_raw(string $path): ?array {
     return null;
 }
 
-// Single EXIF read that returns both GPS and date.
 function read_photo_meta(string $path): array {
     $gps  = null;
     $date = null;
@@ -241,7 +241,6 @@ function read_photo_meta(string $path): array {
             $date = $exif['EXIF']['DateTimeOriginal']
                  ?? $exif['IFD0']['DateTime']
                  ?? null;
-
             $g = $exif['GPS'] ?? [];
             if (isset($g['GPSLatitude'], $g['GPSLongitude'])) {
                 $lat = dms_to_decimal($g['GPSLatitude'],  $g['GPSLatitudeRef']  ?? 'N');
@@ -265,18 +264,20 @@ function read_photo_meta(string $path): array {
     return ['gps' => $gps, 'date' => $date];
 }
 
-// ── Cache ────────────────────────────────────────────────────
+// ── Cache ─────────────────────────────────────────────────────
 
 function load_cache(string $path, int $ver): array {
-    if (!is_file($path)) return ['v' => $ver, 'f' => []];
-    if (filesize($path) > 50 * 1024 * 1024) { error_log("photomap: cache file exceeds 50 MB, ignoring"); return ['v' => $ver, 'f' => []]; }
+    if (!is_file($path)) return ['v' => $ver, 'trips' => []];
+    if (filesize($path) > 50 * 1024 * 1024) {
+        error_log("photomap: cache file exceeds 50 MB, ignoring");
+        return ['v' => $ver, 'trips' => []];
+    }
     $data = @json_decode(@file_get_contents($path), true);
-    if (!is_array($data)) return ['v' => $ver, 'f' => []];
+    if (!is_array($data)) return ['v' => $ver, 'trips' => []];
     if (($data['v'] ?? 0) !== $ver) {
-        // EXIF version changed — reset only file metadata, preserve geocoding
         return [
             'v'         => $ver,
-            'f'         => [],
+            'trips'     => [],
             'geo'       => $data['geo']       ?? [],
             'geo_v'     => $data['geo_v']      ?? 0,
             'geo_retry' => $data['geo_retry']  ?? [],
@@ -291,8 +292,8 @@ function save_cache(string $path, array $cache): bool {
     return true;
 }
 
-// Nominatim reverse geocode → POI name or street/place name.
-// Returns a string (possibly '') on success, or null on network/parse failure.
+// ── Nominatim geocoding ───────────────────────────────────────
+
 function nominatim_reverse(float $lat, float $lng): ?string {
     $url = sprintf(
         'https://nominatim.openstreetmap.org/reverse?lat=%.7f&lon=%.7f&format=json&zoom=15',
@@ -314,7 +315,6 @@ function nominatim_reverse(float $lat, float $lng): ?string {
     $d = json_decode($json, true);
     if (!is_array($d)) return null;
 
-    // Prefer the matched object's own name when it is a POI/landmark
     $name  = $d['name'] ?? '';
     $class = $d['class'] ?? '';
     $poi_classes = ['tourism', 'historic', 'amenity', 'leisure', 'natural', 'man_made', 'building'];
@@ -326,77 +326,104 @@ function nominatim_reverse(float $lat, float $lng): ?string {
         ?? $a['city'] ?? $a['town'] ?? $a['village'] ?? '';
 }
 
-// ── Read photos ──────────────────────────────────────────────
+// ── Scan all trips ────────────────────────────────────────────
 
-$photos_with_gps    = [];
-$photos_without_gps = [];
-$pending_thumbs     = [];
+$all_photos_with_gps    = [];
+$all_photos_without_gps = [];
+$pending_thumbs         = [];
+$trip_meta              = [];  // slug => [label, color]
+$trip_slugs             = [];
 
-if (is_dir($IMAGE_DIR)) {
-    $cache       = load_cache($CACHE_FILE, $CACHE_VER);
-    $cache_dirty = false;
-    $GEO_VER = 3;
-    if (!isset($cache['geo']) || ($cache['geo_v'] ?? 0) !== $GEO_VER) {
-        $cache['geo']   = [];
-        $cache['geo_v'] = $GEO_VER;
-        $cache_dirty    = true;
+$requested_trip = null;
+if (!empty($_GET['trip'])) {
+    $t = preg_replace('/[^a-zA-Z0-9_-]/', '', (string)$_GET['trip']);
+    if ($t !== '') $requested_trip = $t;
+}
+
+$cache       = load_cache($CACHE_FILE, $CACHE_VER);
+$cache_dirty = false;
+if (!isset($cache['trips'])) { $cache['trips'] = []; $cache_dirty = true; }
+
+$GEO_VER = 3;
+if (!isset($cache['geo']) || ($cache['geo_v'] ?? 0) !== $GEO_VER) {
+    $cache['geo'] = []; $cache['geo_v'] = $GEO_VER; $cache_dirty = true;
+}
+
+if (is_dir($TRIPS_DIR)) {
+    foreach (scandir($TRIPS_DIR) ?: [] as $d) {
+        if ($d[0] !== '.' && is_dir($TRIPS_DIR . $d)) $trip_slugs[] = $d;
     }
+    sort($trip_slugs);
+}
 
-    $dir_mtime = (int)filemtime($IMAGE_DIR);
-    if (!isset($cache['dir_mtime']) || $cache['dir_mtime'] !== $dir_mtime || empty($cache['files'])) {
-        $scanned = scandir($IMAGE_DIR);
+if ($requested_trip && !in_array($requested_trip, $trip_slugs, true)) $requested_trip = null;
+
+foreach ($trip_slugs as $cidx => $slug) {
+    $trip_dir   = $TRIPS_DIR . $slug . DIRECTORY_SEPARATOR;
+    $trip_label = ucwords(str_replace(['-', '_'], ' ', $slug));
+    $trip_color = $TRIP_COLORS[$cidx % count($TRIP_COLORS)];
+    $trip_meta[$slug] = ['label' => $trip_label, 'color' => $trip_color];
+
+    if (!isset($cache['trips'][$slug])) {
+        $cache['trips'][$slug] = ['dir_mtime' => 0, 'files' => [], 'f' => []];
+    }
+    $tc = &$cache['trips'][$slug];
+
+    $dir_mtime = (int)filemtime($trip_dir);
+    if ($tc['dir_mtime'] !== $dir_mtime || empty($tc['files'])) {
+        $scanned = scandir($trip_dir) ?: [];
         usort($scanned, 'strcasecmp');
-        $cache['files']     = $scanned;
-        $cache['dir_mtime'] = $dir_mtime;
-        $cache_dirty        = true;
+        $tc['files']     = array_values($scanned);
+        $tc['dir_mtime'] = $dir_mtime;
+        $cache_dirty     = true;
     }
-    $files = $cache['files'];
 
-    // Prune EXIF entries for deleted files (#2)
-    $active_files = array_flip(array_filter($files,
+    $active_ext = array_flip(array_filter($tc['files'],
         fn($f) => in_array(strtolower(pathinfo($f, PATHINFO_EXTENSION)), $EXTENSIONS)));
-    foreach (array_keys($cache['f']) as $cached_file) {
-        if (!isset($active_files[$cached_file])) {
-            unset($cache['f'][$cached_file]);
-            $cache_dirty = true;
-        }
+    foreach (array_keys($tc['f']) as $cf) {
+        if (!isset($active_ext[$cf])) { unset($tc['f'][$cf]); $cache_dirty = true; }
     }
 
-    if (!is_dir($THUMB_DIR)   && !@mkdir($THUMB_DIR,   0755, true)) error_log("photomap: cannot create $THUMB_DIR");
-    if (!is_dir($RESIZED_DIR) && !@mkdir($RESIZED_DIR, 0755, true)) error_log("photomap: cannot create $RESIZED_DIR");
+    $thumb_dir_t   = $trip_dir . '.thumbnails' . DIRECTORY_SEPARATOR;
+    $resized_dir_t = $trip_dir . '.resized'    . DIRECTORY_SEPARATOR;
+    if (!is_dir($thumb_dir_t)   && !@mkdir($thumb_dir_t,   0755, true)) error_log("photomap: cannot create $thumb_dir_t");
+    if (!is_dir($resized_dir_t) && !@mkdir($resized_dir_t, 0755, true)) error_log("photomap: cannot create $resized_dir_t");
 
-    foreach ($files as $file) {
+    foreach ($tc['files'] as $file) {
         $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
         if (!in_array($ext, $EXTENSIONS)) continue;
 
-        $full_path = $IMAGE_DIR . $file;
-        $mtime     = filemtime($full_path);
+        $full_path = $trip_dir . $file;
+        $mtime     = (int)filemtime($full_path);
 
-        $entry = $cache['f'][$file] ?? null;
+        $entry = $tc['f'][$file] ?? null;
         if ($entry && ($entry['m'] ?? 0) === $mtime) {
             $gps  = $entry['g'] ?? null;
             $date = $entry['d'] ?? '—';
         } else {
             ['gps' => $gps, 'date' => $date] = read_photo_meta($full_path);
-            $cache['f'][$file] = ['m' => $mtime, 'g' => $gps, 'd' => $date];
+            $tc['f'][$file] = ['m' => $mtime, 'g' => $gps, 'd' => $date];
             $cache_dirty = true;
         }
 
-        // Collect thumbnails and resized images that need generating (#5)
-        $thumb_file   = $THUMB_DIR   . md5($file) . '.jpg';
-        $resized_file = $RESIZED_DIR . md5($file) . '.jpg';
-        if (!is_file($thumb_file) || (int)filemtime($thumb_file) < $mtime) {
-            $pending_thumbs[] = ['src' => $full_path, 'dst' => $thumb_file, 'type' => 'thumb'];
-        }
-        if (!is_file($resized_file) || (int)filemtime($resized_file) < $mtime) {
+        $thumb_file   = $thumb_dir_t   . md5($file) . '.jpg';
+        $resized_file = $resized_dir_t . md5($file) . '.jpg';
+        if (!is_file($thumb_file)   || (int)filemtime($thumb_file)   < $mtime)
+            $pending_thumbs[] = ['src' => $full_path, 'dst' => $thumb_file,   'type' => 'thumb'];
+        if (!is_file($resized_file) || (int)filemtime($resized_file) < $mtime)
             $pending_thumbs[] = ['src' => $full_path, 'dst' => $resized_file, 'type' => 'resized'];
-        }
 
-        $web_path   = '?full=' . rawurlencode($file);
-        $thumb_url  = '?thumb=' . rawurlencode($file);
-        $name_display = ucwords(str_replace(['_', '-'], ' ', pathinfo($file, PATHINFO_FILENAME)));
-        $info = ['file' => $file, 'path' => $web_path, 'thumb' => $thumb_url,
-                 'name' => $name_display, 'date' => $date];
+        $qs = '&trip=' . rawurlencode($slug);
+        $info = [
+            'file'       => $file,
+            'path'       => '?full='  . rawurlencode($file) . $qs,
+            'thumb'      => '?thumb=' . rawurlencode($file) . $qs,
+            'name'       => ucwords(str_replace(['_', '-'], ' ', pathinfo($file, PATHINFO_FILENAME))),
+            'date'       => $date,
+            'trip'       => $slug,
+            'trip_label' => $trip_label,
+            'trip_color' => $trip_color,
+        ];
 
         if ($gps) {
             $lat = round($gps['lat'], 7);
@@ -405,25 +432,28 @@ if (is_dir($IMAGE_DIR)) {
             $info['lat'] = $lat;
             $info['lng'] = $lng;
             $info['loc'] = $cache['geo'][$geo_key] ?? null;
-            $photos_with_gps[] = $info;
+            $all_photos_with_gps[] = $info;
         } else {
-            $photos_without_gps[] = $info;
+            $all_photos_without_gps[] = $info;
         }
     }
-
-    if ($cache_dirty) save_cache($CACHE_FILE, $cache);
+    unset($tc);
 }
 
-// ── Locations API endpoint ───────────────────────────────────
-// Lightweight endpoint used by the JS refresh: returns only {geoKey: loc} pairs
-// and a pending flag. Much smaller than re-fetching the full ?api=photos payload.
+// Prune stale trip cache entries for deleted trip folders
+foreach (array_keys($cache['trips']) as $cs) {
+    if (!in_array($cs, $trip_slugs, true)) { unset($cache['trips'][$cs]); $cache_dirty = true; }
+}
+
+if ($cache_dirty) save_cache($CACHE_FILE, $cache);
+
+// ── Locations API ─────────────────────────────────────────────
 if (isset($_GET['api']) && $_GET['api'] === 'locations') {
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
     $retry_before = time() - 86400;
-    $locs    = [];
-    $pending = false;
-    foreach ($photos_with_gps as $p) {
+    $locs = []; $pending = false;
+    foreach ($all_photos_with_gps as $p) {
         $key = sprintf('%.3f,%.3f', $p['lat'], $p['lng']);
         if (array_key_exists($key, $cache['geo']) && $cache['geo'][$key] !== null) {
             $locs[$key] = $cache['geo'][$key];
@@ -437,57 +467,53 @@ if (isset($_GET['api']) && $_GET['api'] === 'locations') {
     exit;
 }
 
-// ── JSON API endpoint ────────────────────────────────────────
+// ── Photos API ────────────────────────────────────────────────
 if (isset($_GET['api']) && $_GET['api'] === 'photos') {
-    // Determine whether any GPS photo still needs geocoding.
-    // null in geo cache = previous network failure; retry after 24 h.
-    $retry_before = time() - 86400;
+    $retry_before  = time() - 86400;
     $needs_geocode = false;
-    foreach ($photos_with_gps as $p) {
+    foreach ($all_photos_with_gps as $p) {
         $key = sprintf('%.3f,%.3f', $p['lat'], $p['lng']);
         if (!array_key_exists($key, $cache['geo'])
             || ($cache['geo'][$key] === null && ($cache['geo_retry'][$key] ?? 0) < $retry_before)) {
-            $needs_geocode = true;
-            break;
+            $needs_geocode = true; break;
         }
     }
 
-    $json = json_encode(
-        ['photos' => $photos_with_gps, 'no_gps' => $photos_without_gps, 'geocoding_pending' => $needs_geocode],
-        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG
-    );
+    $trips_info = array_map(fn($slug) => [
+        'slug'  => $slug,
+        'label' => $trip_meta[$slug]['label'],
+        'color' => $trip_meta[$slug]['color'],
+    ], $trip_slugs);
 
-    // Gzip if the client supports it — reduces a large payload to ~20% of raw size.
+    $json = json_encode([
+        'photos'            => $all_photos_with_gps,
+        'no_gps'            => $all_photos_without_gps,
+        'geocoding_pending' => $needs_geocode,
+        'trips'             => $trips_info,
+        'active_trip'       => $requested_trip,
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG);
+
     $accept_enc = $_SERVER['HTTP_ACCEPT_ENCODING'] ?? '';
     $use_gzip   = function_exists('gzencode') && str_contains($accept_enc, 'gzip');
-    $body       = $use_gzip ? gzencode($json, 6) : $json;
+    $body_out   = $use_gzip ? gzencode($json, 6) : $json;
 
     header('Content-Type: application/json; charset=utf-8');
-    // No-store when geocoding is still pending so the next load always gets fresh data.
     header('Cache-Control: ' . ($needs_geocode ? 'no-store' : 'public, max-age=60, stale-while-revalidate=3600'));
-    header('Content-Length: ' . mb_strlen($body, '8bit'));
+    header('Content-Length: ' . mb_strlen($body_out, '8bit'));
     if ($use_gzip) header('Content-Encoding: gzip');
-    echo $body;
+    echo $body_out;
 
-    // Close the connection so the browser gets its response immediately, then do
-    // background work: generate any missing thumbnails and geocode pending locations.
-    $has_background_work = $needs_geocode || !empty($pending_thumbs);
-    if ($has_background_work) {
+    $has_bg = $needs_geocode || !empty($pending_thumbs);
+    if ($has_bg) {
         ignore_user_abort(true);
-        if (function_exists('fastcgi_finish_request')) {
-            fastcgi_finish_request();
-        } else {
-            @ob_end_flush();
-            flush();
-        }
+        if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
+        else { @ob_end_flush(); flush(); }
 
-        // Generate missing thumbnails and resized images (CPU-bound; no rate limit needed).
         foreach ($pending_thumbs as $t) {
             if ($t['type'] === 'thumb') make_thumbnail($t['src'], $t['dst'], $THUMB_SIZE);
             else                        make_resized($t['src'], $t['dst'], $RESIZED_MAX);
         }
 
-        // Geocode pending locations (≤1 req/s per Nominatim policy, save every 10 results).
         if ($needs_geocode) {
             $lock = $CACHE_FILE . '.lock';
             if (is_file($lock) && filemtime($lock) < time() - 90) @unlink($lock);
@@ -495,7 +521,7 @@ if (isset($_GET['api']) && $_GET['api'] === 'photos') {
             if ($fh) {
                 set_time_limit(0);
                 $geo_count = 0;
-                foreach ($photos_with_gps as $p) {
+                foreach ($all_photos_with_gps as $p) {
                     $key = sprintf('%.3f,%.3f', $p['lat'], $p['lng']);
                     if (array_key_exists($key, $cache['geo'])
                         && !($cache['geo'][$key] === null && ($cache['geo_retry'][$key] ?? 0) < $retry_before)) {
@@ -517,13 +543,13 @@ if (isset($_GET['api']) && $_GET['api'] === 'photos') {
     exit;
 }
 
-// ── Main page ────────────────────────────────────────────────
+// ── Main page ─────────────────────────────────────────────────
 header('Cache-Control: public, max-age=60, stale-while-revalidate=3600');
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: SAMEORIGIN');
 header('Referrer-Policy: strict-origin-when-cross-origin');
 
-$total = count($photos_with_gps) + count($photos_without_gps);
+$total = count($all_photos_with_gps) + count($all_photos_without_gps);
 ?>
 <!doctype html>
 <html lang="en">
@@ -592,8 +618,8 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 .photo-marker .thumb{width:100%;height:100%;border-radius:999px;background-size:cover;background-position:center;display:block;}
 .photo-marker::after{content:"";position:absolute;left:50%;bottom:-4px;width:8px;height:8px;background:var(--paper);transform:translateX(-50%) rotate(45deg);box-shadow:2px 2px 4px rgba(20,22,40,.08);z-index:-1;}
 .photo-marker:hover{transform:translateY(-4px) scale(1.08)}
-.photo-marker.is-active{transform:translateY(-6px) scale(1.18);box-shadow:0 0 0 3px var(--accent), var(--shadow-3);}
-.photo-marker.is-active::before{content:"";position:absolute;inset:-10px;border-radius:999px;border:1px solid var(--accent);animation:ring 1.6s ease-out infinite;pointer-events:none;}
+.photo-marker.is-active{transform:translateY(-6px) scale(1.18);box-shadow:0 0 0 3px var(--mc, var(--accent)), var(--shadow-3);}
+.photo-marker.is-active::before{content:"";position:absolute;inset:-10px;border-radius:999px;border:1px solid var(--mc, var(--accent));animation:ring 1.6s ease-out infinite;pointer-events:none;}
 @keyframes ring{0%{transform:scale(.9);opacity:.8}100%{transform:scale(1.6);opacity:0}}
 .leaflet-marker-icon.photo-marker-wrap{background:transparent;border:0}
 .photo-cluster{border-radius:999px;background:color-mix(in oklab, var(--accent) 20%, var(--paper));padding:3px;box-shadow:var(--shadow-2);cursor:pointer;}
@@ -612,17 +638,38 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 .sidebar-head .close{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--ink-600);}
 .sidebar-head .close:hover{background:var(--ink-50);color:var(--ink)}
 .sidebar-head .close svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5}
+
+/* Trip pill-bar */
+.trip-pills{display:flex;flex-wrap:wrap;gap:5px;padding:10px 14px;border-bottom:1px solid var(--ink-100);}
+.trip-pill{display:flex;align-items:center;gap:5px;padding:4px 9px 4px 7px;border-radius:999px;border:1px solid var(--ink-200);font-size:10px;background:var(--paper);cursor:pointer;transition:background .15s, border-color .15s;white-space:nowrap;letter-spacing:0.04em;}
+.trip-pill:hover{background:var(--ink-50)}
+.trip-pill.is-active{background:var(--ink-100);border-color:var(--ink-600)}
+.trip-pill .pill-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+.trip-pill .pill-copy{display:inline-flex;align-items:center;margin-left:2px;opacity:0.45;transition:opacity .15s;}
+.trip-pill .pill-copy:hover{opacity:1}
+.trip-pill .pill-copy svg{display:block;}
+
 .sidebar-body{flex:1;overflow-y:auto;padding:8px 12px 16px}
 .sidebar-body::-webkit-scrollbar{width:8px}
 .sidebar-body::-webkit-scrollbar-thumb{background:var(--ink-200);border-radius:4px}
 .sidebar-body::-webkit-scrollbar-track{background:transparent}
-.section-label{display:flex;align-items:center;gap:10px;padding:14px 10px 8px;font-size:10px;color:var(--ink-600);text-transform:uppercase;letter-spacing:0.14em;}
+
+/* Trip section headers (collapsible) */
+.trip-header{display:flex;align-items:center;gap:9px;padding:14px 10px 10px;cursor:pointer;user-select:none;}
+.trip-header:hover .trip-name{opacity:.8}
+.trip-indicator{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+.trip-name{font-family:var(--serif);font-size:17px;font-style:italic;flex:1;color:var(--ink);line-height:1;letter-spacing:-0.01em;}
+.trip-count{font-size:10px;color:var(--ink-600);text-transform:uppercase;letter-spacing:0.1em;}
+.trip-chevron{font-size:9px;color:var(--ink-600);transition:transform .2s;display:inline-block;}
+.trip-header.is-collapsed .trip-chevron{transform:rotate(-90deg);}
+
+.section-label{display:flex;align-items:center;gap:10px;padding:8px 10px 6px;font-size:10px;color:var(--ink-600);text-transform:uppercase;letter-spacing:0.14em;}
 .section-label .line{flex:1;height:1px;background:var(--ink-100)}
 .section-label .num{font-family:var(--serif);font-style:italic;font-size:14px;color:var(--ink);text-transform:none;letter-spacing:0}
 .photo-row{display:flex;gap:12px;align-items:center;padding:8px 10px;border-radius:12px;cursor:pointer;transition:background .15s;position:relative;}
 .photo-row:hover{background:var(--ink-50)}
 .photo-row.is-active{background:var(--ink-50)}
-.photo-row.is-active::before{content:"";position:absolute;left:-4px;top:18px;bottom:18px;width:2px;background:var(--accent);border-radius:2px;}
+.photo-row.is-active::before{content:"";position:absolute;left:-4px;top:18px;bottom:18px;width:2px;background:var(--tc, var(--accent));border-radius:2px;}
 .photo-row .thumb{width:46px;height:46px;border-radius:10px;background-size:cover;background-position:center;background-color:var(--ink-100);flex-shrink:0;position:relative;}
 .photo-row.no-gps .thumb::after{content:"";position:absolute;inset:0;border-radius:10px;background:repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in oklab, var(--ink) 18%, transparent) 4px 5px);}
 .photo-row .info{min-width:0;flex:1}
@@ -706,6 +753,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
     width: 40px; height: 40px;
     margin: -6px -8px -6px 0;
   }
+  .trip-pills { padding: 8px 10px; gap: 4px; overflow-x: auto; flex-wrap: nowrap; }
   .sidebar-body { padding: 4px 8px 12px; }
   .photo-row { padding: 10px 8px; }
   .photo-row .thumb { width: 52px; height: 52px; }
@@ -828,7 +876,8 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 <div class="empty-state">
   <div class="card">
     <h2>No Photos<em>.</em></h2>
-    <p>Place your photos in the <code>images/</code> folder next to this file.<br>
+    <p>Create trip folders inside the <code>trips/</code> directory and add photos to them.<br>
+       E.g. <code>trips/paris-2025/</code><br>
        Supported formats: JPG, WebP, PNG, HEIC, TIFF.</p>
   </div>
 </div>
@@ -838,12 +887,13 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
   <div class="sidebar-head">
     <div>
       <div class="title">Index<em>.</em></div>
-      <div class="meta"><?= $total ?> photo<?= $total !== 1 ? 's' : '' ?> · <?= count($photos_with_gps) ?> with GPS</div>
+      <div class="meta"><?= $total ?> photo<?= $total !== 1 ? 's' : '' ?> · <?= count($all_photos_with_gps) ?> with GPS</div>
     </div>
     <button class="close" id="sidebarClose" aria-label="Close sidebar">
       <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
     </button>
   </div>
+  <div class="trip-pills" id="tripPills"></div>
   <div class="sidebar-body" id="sidebarBody">
     <p style="padding:20px 10px;font-size:11px;color:var(--ink-600)">Loading…</p>
   </div>
@@ -885,9 +935,9 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 </div>
 
 <script>
-// ── Map (setup before data loads) ─────────────────────────────
+// ── Map ───────────────────────────────────────────────────────
 const map = L.map('map', { zoomControl: true, scrollWheelZoom: true })
-  .setView([<?= $MAP_LAT ?>, <?= $MAP_LNG ?>], 2);
+  .setView([0, 0], 2);
 
 L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
   attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · CARTO',
@@ -895,27 +945,25 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
 }).addTo(map);
 
 // ── Shared state ──────────────────────────────────────────────
-let PHOTOS = [], NO_GPS = [];
+let PHOTOS = [], NO_GPS = [], TRIPS = [];
 let markers = [], markerCluster = null;
 let lbCurrent = { list: 'gps', i: -1 };
+let activeTrip = null;
+const tripCollapsed = new Set();
 
 // ── Utilities ─────────────────────────────────────────────────
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
 function fmtDateTime(s) {
   if (!s || s === '—') return '—';
-  // EXIF: "2023:05:12 14:30:00"
   const exif = s.match(/^(\d{4}):(\d{2}):(\d{2})\s(\d{2}):(\d{2})/);
   if (exif) return `${exif[1]}/${exif[2]}/${exif[3]} ${exif[4]}:${exif[5]}`;
-  // ISO / filename: "2023-05-12" or "2023-05-12 14:30:00"
   const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
   if (iso) return iso[4] ? `${iso[1]}/${iso[2]}/${iso[3]} ${iso[4]}:${iso[5]}` : `${iso[1]}/${iso[2]}/${iso[3]}`;
   return s;
 }
 
 // ── Geocoding refresh ─────────────────────────────────────────
-// Polls the lightweight ?api=locations endpoint (not the full ?api=photos)
-// and applies updated POI names in-place. O(n) — uses a geoKey lookup object.
 function scheduleGeocodeRefresh() {
   setTimeout(() => {
     fetch('?api=locations')
@@ -931,23 +979,68 @@ function scheduleGeocodeRefresh() {
         if (changed) renderVirtual();
         if (d.pending) scheduleGeocodeRefresh();
       })
-      .catch(err => { console.warn('Geocode refresh failed:', err); });
+      .catch(err => { console.warn('Geocode refresh failed:', err); scheduleGeocodeRefresh(); });
   }, 6000);
 }
 
-// ── Sidebar (virtual scroll) ──────────────────────────────────
+// ── Sidebar virtual scroll ────────────────────────────────────
 const $body = document.getElementById('sidebarBody');
-const ROW_H = 62, LABEL_H = 40, BUFFER = 8;
+const ROW_H = 62, LABEL_H = 36, TRIP_H = 48, BUFFER = 8;
 
 let FLAT = [], TOPS = null, TOTAL_H = 0;
 let _rvStart = -1, _rvEnd = -1, _rvActiveKind = null, _rvActiveI = -1;
 
+function itemHeight(item) {
+  if (item.type === 'trip_header') return TRIP_H;
+  if (item.type === 'label')       return LABEL_H;
+  return ROW_H;
+}
+
+function rebuildFlat() {
+  FLAT = [];
+  const slugsToShow = activeTrip ? [activeTrip] : TRIPS.map(t => t.slug);
+
+  for (const slug of slugsToShow) {
+    const trip = TRIPS.find(t => t.slug === slug);
+    if (!trip) continue;
+
+    const tripGps   = PHOTOS.map((p, i) => ({ p, i })).filter(({ p }) => p.trip === slug);
+    const tripNoGps = NO_GPS.map((p, i) => ({ p, i })).filter(({ p }) => p.trip === slug);
+    if (!tripGps.length && !tripNoGps.length) continue;
+
+    const collapsed = tripCollapsed.has(slug);
+    FLAT.push({ type: 'trip_header', slug, label: trip.label, color: trip.color,
+                gpsCount: tripGps.length, noGpsCount: tripNoGps.length, collapsed });
+
+    if (!collapsed) {
+      for (const { p, i } of tripGps)   FLAT.push({ type: 'row', kind: 'gps',   idx: i, p });
+      for (const { p, i } of tripNoGps) FLAT.push({ type: 'row', kind: 'nogps', idx: i, p });
+    }
+  }
+
+  if (!FLAT.length) FLAT.push({ type: 'empty' });
+
+  const tops = new Int32Array(FLAT.length + 1);
+  for (let i = 0; i < FLAT.length; i++) tops[i + 1] = tops[i] + itemHeight(FLAT[i]);
+  TOPS    = tops;
+  TOTAL_H = tops[FLAT.length];
+  _rvStart = _rvEnd = -1;
+}
+
 function renderItem(item) {
+  if (item.type === 'trip_header') {
+    const cls = item.collapsed ? ' is-collapsed' : '';
+    return `<div class="trip-header${cls}" data-slug="${esc(item.slug)}">` +
+      `<span class="trip-indicator" style="background:${esc(item.color)}"></span>` +
+      `<span class="trip-name">${esc(item.label)}</span>` +
+      `<span class="trip-count">${item.gpsCount + item.noGpsCount}</span>` +
+      `<span class="trip-chevron">▾</span></div>`;
+  }
   if (item.type === 'label') {
     return `<div class="section-label"><span class="num">${item.count.toString().padStart(2,'0')}</span><span>${item.text}</span><span class="line"></span></div>`;
   }
   if (item.type === 'empty') {
-    return `<p style="padding:10px;font-size:11px;color:var(--ink-600)">No photos with GPS.</p>`;
+    return `<p style="padding:10px;font-size:11px;color:var(--ink-600)">No photos found.</p>`;
   }
   const { kind, idx, p } = item;
   const active = lbCurrent.list === kind && lbCurrent.i === idx ? ' is-active' : '';
@@ -959,10 +1052,10 @@ function renderItem(item) {
   } else {
     locHtml = '<span>no GPS</span>';
   }
-  return `<div class="photo-row${kind === 'nogps' ? ' no-gps' : ''}${active}" data-kind="${kind}" data-idx="${idx}">
-    <div class="thumb" style="background-image:url('${encodeURI(p.thumb)}')"></div>
-    <div class="info"><div class="name">${esc(dateStr)}</div><div class="meta">${locHtml}</div></div>
-  </div>`;
+  return `<div class="photo-row${kind === 'nogps' ? ' no-gps' : ''}${active}" data-kind="${kind}" data-idx="${idx}" style="--tc:${esc(p.trip_color)}">` +
+    `<div class="thumb" style="background-image:url('${encodeURI(p.thumb)}')"></div>` +
+    `<div class="info"><div class="name">${esc(dateStr)}</div><div class="meta">${locHtml}</div></div>` +
+    `</div>`;
 }
 
 function renderVirtual() {
@@ -980,7 +1073,6 @@ function renderVirtual() {
   while (end < FLAT.length && TOPS[end] < st + ch) end++;
   end = Math.min(FLAT.length, end + BUFFER);
 
-  // Skip rebuild when visible range and active item are unchanged (#10)
   if (start === _rvStart && end === _rvEnd
       && lbCurrent.list === _rvActiveKind && lbCurrent.i === _rvActiveI) return;
   _rvStart = start; _rvEnd = end;
@@ -990,19 +1082,30 @@ function renderVirtual() {
   for (let i = start; i < end; i++) html += renderItem(FLAT[i]);
   html += `<div style="height:${Math.max(0, TOTAL_H - TOPS[end])}px" aria-hidden="true"></div>`;
   $body.innerHTML = html;
-
-  $body.querySelectorAll('.photo-row').forEach(row => {
-    row.addEventListener('click', () => {
-      const kind = row.dataset.kind, idx = +row.dataset.idx;
-      if (kind === 'gps') {
-        markerCluster.zoomToShowLayer(markers[idx], () => {});
-        openLightbox(idx, false);
-      } else {
-        openLightbox(idx, true);
-      }
-    });
-  });
 }
+
+// Event delegation for sidebar clicks
+$body.addEventListener('click', e => {
+  const header = e.target.closest('.trip-header');
+  if (header) {
+    const slug = header.dataset.slug;
+    if (tripCollapsed.has(slug)) tripCollapsed.delete(slug);
+    else tripCollapsed.add(slug);
+    rebuildFlat();
+    renderVirtual();
+    return;
+  }
+  const row = e.target.closest('.photo-row');
+  if (row) {
+    const kind = row.dataset.kind, idx = +row.dataset.idx;
+    if (kind === 'gps') {
+      markerCluster.zoomToShowLayer(markers[idx], () => {});
+      openLightbox(idx, false);
+    } else {
+      openLightbox(idx, true);
+    }
+  }
+});
 
 function scrollSidebarTo(kind, i) {
   const fi = FLAT.findIndex(it => it.type === 'row' && it.kind === kind && it.idx === i);
@@ -1022,6 +1125,76 @@ document.getElementById('sidebarOpen').addEventListener('click', () => {
   renderVirtual();
 });
 
+// ── Trip pill-bar ─────────────────────────────────────────────
+const $pills = document.getElementById('tripPills');
+
+function buildPillBar(trips, initialActive) {
+  $pills.innerHTML = '';
+  if (!trips.length) { $pills.style.display = 'none'; return; }
+
+  const allBtn = document.createElement('button');
+  allBtn.className = 'trip-pill' + (!initialActive ? ' is-active' : '');
+  allBtn.dataset.trip = '';
+  allBtn.textContent = 'All';
+  allBtn.addEventListener('click', () => applyTripFilter(null));
+  $pills.appendChild(allBtn);
+
+  for (const trip of trips) {
+    const btn = document.createElement('button');
+    btn.className = 'trip-pill' + (initialActive === trip.slug ? ' is-active' : '');
+    btn.dataset.trip = trip.slug;
+
+    const dot = document.createElement('span');
+    dot.className = 'pill-dot';
+    dot.style.background = trip.color;
+
+    const label = document.createElement('span');
+    label.textContent = trip.label;
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'pill-copy';
+    copyBtn.title = 'Copy link to this trip';
+    copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+    copyBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const url = new URL(location.href);
+      url.searchParams.set('trip', trip.slug);
+      navigator.clipboard.writeText(url.toString()).catch(() => {});
+      copyBtn.title = 'Copied!';
+      setTimeout(() => { copyBtn.title = 'Copy link to this trip'; }, 1500);
+    });
+
+    btn.addEventListener('click', () => applyTripFilter(activeTrip === trip.slug ? null : trip.slug));
+    btn.appendChild(dot);
+    btn.appendChild(label);
+    btn.appendChild(copyBtn);
+    $pills.appendChild(btn);
+  }
+}
+
+function applyTripFilter(slug) {
+  activeTrip = slug;
+
+  $pills.querySelectorAll('.trip-pill').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.trip === (slug ?? ''));
+  });
+
+  markerCluster.clearLayers();
+  markers.forEach((m, i) => {
+    if (!slug || PHOTOS[i].trip === slug) markerCluster.addLayer(m);
+  });
+
+  const gps = slug ? PHOTOS.filter(p => p.trip === slug) : PHOTOS;
+  if (gps.length > 0) {
+    map.fitBounds(L.latLngBounds(gps.map(p => [p.lat, p.lng])), {
+      paddingTopLeft: [20, 96], paddingBottomRight: [364, 24],
+    });
+  }
+
+  rebuildFlat();
+  renderVirtual();
+}
+
 // ── Lightbox ──────────────────────────────────────────────────
 const $lb         = document.getElementById('lightbox');
 const $lbMedia    = document.getElementById('lbMedia');
@@ -1030,7 +1203,7 @@ const $lbNow      = document.getElementById('lbNow');
 const $lbTotal    = document.getElementById('lbTotal');
 const $lbThumbs   = document.getElementById('lbThumbs');
 const $lbLocation = document.getElementById('lbLocation');
-let activeMarkerEl = null; // track active map marker element directly (#7)
+let activeMarkerEl = null;
 
 const getList = kind => kind === 'gps' ? PHOTOS : NO_GPS;
 
@@ -1059,14 +1232,16 @@ function showAt(kind, i) {
   lbCurrent = { list: kind, i };
   const p = list[i];
 
-  // Show spinner while full-res image loads (#9)
   $lbMedia.classList.remove('loaded');
-  $lbImage.onload  = () => $lbMedia.classList.add('loaded');
-  $lbImage.onerror = () => {
-    $lbMedia.classList.add('loaded');
-    $lbMedia.insertAdjacentHTML('beforeend',
-      '<p style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--ink-600);font-size:12px;margin:0">Could not load image</p>');
-  };
+  $lbMedia._errEl = $lbMedia._errEl || (() => {
+    const el = document.createElement('p');
+    el.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:var(--ink-600);font-size:12px;margin:0';
+    el.textContent = 'Could not load image';
+    $lbMedia.appendChild(el);
+    return el;
+  })();
+  $lbImage.onload  = () => { $lbMedia._errEl.style.display = 'none'; $lbMedia.classList.add('loaded'); };
+  $lbImage.onerror = () => { $lbMedia._errEl.style.display = 'flex'; $lbMedia.classList.add('loaded'); };
   $lbImage.src = p.path;
 
   $lbNow.textContent   = (i+1).toString().padStart(2,'0');
@@ -1079,7 +1254,6 @@ function showAt(kind, i) {
     $lbLocation.style.display = 'none';
   }
 
-  // Update active marker directly instead of querySelectorAll over all markers (#7)
   if (activeMarkerEl) activeMarkerEl.classList.remove('is-active');
   activeMarkerEl = kind === 'gps'
     ? document.querySelector(`.photo-marker[data-idx="${i}"]`) : null;
@@ -1102,7 +1276,7 @@ function closeLightbox() {
   $lb.addEventListener('transitionend', () => { $lb.style.display = ''; }, { once: true });
   if (activeMarkerEl) { activeMarkerEl.classList.remove('is-active'); activeMarkerEl = null; }
   lbCurrent = { list: lbCurrent.list, i: -1 };
-  _rvActiveI = -1; // force renderVirtual to repaint active state
+  _rvActiveI = -1;
   renderVirtual();
 }
 
@@ -1125,12 +1299,15 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowRight') nudge(+1);
 });
 
-// ── Async data load ───────────────────────────────────────────
-function initApp(photos, noGps) {
+// ── App init ──────────────────────────────────────────────────
+function initApp(photos, noGps, trips, initialTrip) {
   PHOTOS = photos;
   NO_GPS = noGps;
+  TRIPS  = trips;
+  activeTrip = initialTrip ?? null;
 
-  // Build markers
+  buildPillBar(trips, activeTrip);
+
   markerCluster = L.markerClusterGroup({
     maxClusterRadius: 60,
     showCoverageOnHover: false,
@@ -1143,51 +1320,39 @@ function initApp(photos, noGps) {
   markers = PHOTOS.map((p, i) => {
     const icon = L.divIcon({
       className: 'photo-marker-wrap',
-      html: `<div class="photo-marker" data-idx="${i}"><span class="thumb" style="background-image:url('${encodeURI(p.thumb)}')"></span></div>`,
+      html: `<div class="photo-marker" data-idx="${i}" style="--mc:${p.trip_color}"><span class="thumb" style="background-image:url('${encodeURI(p.thumb)}')"></span></div>`,
       iconSize: [42, 42], iconAnchor: [21, 21],
     });
     const m = L.marker([p.lat, p.lng], { icon });
     m.on('click', () => openLightbox(i, false));
     return m;
   });
-  markers.forEach(m => markerCluster.addLayer(m));
+
+  // Add only markers for the active trip (or all if no filter)
+  markers.forEach((m, i) => {
+    if (!activeTrip || PHOTOS[i].trip === activeTrip) markerCluster.addLayer(m);
+  });
   map.addLayer(markerCluster);
 
-  if (PHOTOS.length > 0) {
-    map.fitBounds(L.latLngBounds(PHOTOS.map(p => [p.lat, p.lng])), {
-      paddingTopLeft:     [20, 96],   // 96 = app header height + buffer
-      paddingBottomRight: [364, 24],  // 364 = sidebar (340) + right gap
+  // fitBounds to active trip or all photos
+  const gpsForBounds = activeTrip ? PHOTOS.filter(p => p.trip === activeTrip) : PHOTOS;
+  if (gpsForBounds.length > 0) {
+    map.fitBounds(L.latLngBounds(gpsForBounds.map(p => [p.lat, p.lng])), {
+      paddingTopLeft:     [20, 96],
+      paddingBottomRight: [364, 24],
     });
   }
 
-  // Build virtual scroll index
-  FLAT = [];
-  if (PHOTOS.length) {
-    FLAT.push({ type: 'label', text: 'With GPS',  count: PHOTOS.length });
-    PHOTOS.forEach((p, i)  => FLAT.push({ type: 'row', kind: 'gps',   idx: i, p }));
-  } else {
-    FLAT.push({ type: 'empty' });
-  }
-  if (NO_GPS.length) {
-    FLAT.push({ type: 'label', text: 'Without GPS', count: NO_GPS.length });
-    NO_GPS.forEach((p, i) => FLAT.push({ type: 'row', kind: 'nogps', idx: i, p }));
-  }
-
-  const newTOPS = new Int32Array(FLAT.length + 1);
-  for (let i = 0; i < FLAT.length; i++) {
-    const h = FLAT[i].type === 'label' ? LABEL_H : FLAT[i].type === 'empty' ? 36 : ROW_H;
-    newTOPS[i + 1] = newTOPS[i] + h;
-  }
-  TOPS    = newTOPS;
-  TOTAL_H = TOPS[FLAT.length];
-
+  rebuildFlat();
   renderVirtual();
-
 }
 
 fetch('?api=photos')
   .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-  .then(d => { initApp(d.photos, d.no_gps); if (d.geocoding_pending) scheduleGeocodeRefresh(); })
+  .then(d => {
+    initApp(d.photos, d.no_gps, d.trips ?? [], d.active_trip ?? null);
+    if (d.geocoding_pending) scheduleGeocodeRefresh();
+  })
   .catch(err => {
     const p = document.createElement('p');
     p.style.cssText = 'padding:20px 10px;font-size:11px;color:var(--ink-600)';
