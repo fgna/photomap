@@ -7,8 +7,52 @@
 
 $IMAGE_DIR  = __DIR__ . '/images/';
 $CACHE_FILE = __DIR__ . '/.photomap-cache.json';
+$THUMB_DIR  = __DIR__ . '/.thumbnails/';
+$THUMB_SIZE = 240;          // square thumbnail px
 $EXTENSIONS = ['jpg', 'jpeg', 'webp', 'png', 'heic', 'tiff', 'tif'];
-$CACHE_VER  = 2;
+$CACHE_VER  = 3;            // bumped to clear v2 caches after schema review
+
+// ── Thumbnail endpoint ───────────────────────────────────────
+if (isset($_GET['thumb'])) {
+    $file   = basename($_GET['thumb']);
+    $source = $IMAGE_DIR . $file;
+    if (!is_file($source)) { http_response_code(404); exit; }
+
+    if (!is_dir($THUMB_DIR)) @mkdir($THUMB_DIR, 0755, true);
+    $thumb  = $THUMB_DIR . md5($file) . '.jpg';
+    $imtime = (int)filemtime($source);
+
+    if (!is_file($thumb) || (int)filemtime($thumb) < $imtime) {
+        $ext     = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+        $src_img = match(true) {
+            in_array($ext, ['jpg', 'jpeg']) => @imagecreatefromjpeg($source),
+            $ext === 'png'                  => @imagecreatefrompng($source),
+            $ext === 'webp'                 => @imagecreatefromwebp($source),
+            default                         => false,
+        };
+        if ($src_img) {
+            $sw = imagesx($src_img); $sh = imagesy($src_img);
+            if ($sw > $sh) { $ox = ($sw - $sh) / 2; $oy = 0; $sq = $sh; }
+            else            { $ox = 0; $oy = ($sh - $sw) / 2; $sq = $sw; }
+            $dst = imagecreatetruecolor($THUMB_SIZE, $THUMB_SIZE);
+            imagecopyresampled($dst, $src_img, 0, 0, (int)$ox, (int)$oy,
+                               $THUMB_SIZE, $THUMB_SIZE, (int)$sq, (int)$sq);
+            imagejpeg($dst, $thumb, 85);
+            imagedestroy($src_img);
+            imagedestroy($dst);
+        } else {
+            // Format unsupported by GD — redirect to original
+            header('Location: images/' . rawurlencode($file), true, 302);
+            exit;
+        }
+    }
+
+    header('Content-Type: image/jpeg');
+    header('Cache-Control: public, max-age=31536000, immutable');
+    header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $imtime) . ' GMT');
+    readfile($thumb);
+    exit;
+}
 
 // ── GPS-Helfer ───────────────────────────────────────────────
 
@@ -166,9 +210,11 @@ if (is_dir($IMAGE_DIR)) {
             $cache_dirty = true;
         }
 
-        $web_path     = 'images/' . rawurlencode($file);
+        $web_path   = 'images/' . rawurlencode($file);
+        $thumb_url  = '?thumb=' . rawurlencode($file);
         $name_display = ucwords(str_replace(['_', '-'], ' ', pathinfo($file, PATHINFO_FILENAME)));
-        $info = ['file' => $file, 'path' => $web_path, 'name' => $name_display, 'date' => $date];
+        $info = ['file' => $file, 'path' => $web_path, 'thumb' => $thumb_url,
+                 'name' => $name_display, 'date' => $date];
 
         if ($gps) {
             $info['lat'] = round($gps['lat'], 7);
@@ -182,12 +228,23 @@ if (is_dir($IMAGE_DIR)) {
     if ($cache_dirty) save_cache($CACHE_FILE, $cache);
 }
 
-$total       = count($photos_with_gps) + count($photos_without_gps);
-$center_lat  = 37.1773;
-$center_lng  = -3.5986;
+// ── JSON API endpoint ────────────────────────────────────────
+if (isset($_GET['api']) && $_GET['api'] === 'photos') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: public, max-age=60, stale-while-revalidate=3600');
+    echo json_encode(
+        ['photos' => $photos_with_gps, 'no_gps' => $photos_without_gps],
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG
+    );
+    exit;
+}
 
-$photos_json = json_encode($photos_with_gps,    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG);
-$no_gps_json = json_encode($photos_without_gps, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG);
+// ── Main page ────────────────────────────────────────────────
+header('Cache-Control: public, max-age=60, stale-while-revalidate=3600');
+
+$total      = count($photos_with_gps) + count($photos_without_gps);
+$center_lat = 37.1773;
+$center_lng = -3.5986;
 ?>
 <!doctype html>
 <html lang="de">
@@ -368,7 +425,9 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
       <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
     </button>
   </div>
-  <div class="sidebar-body" id="sidebarBody"></div>
+  <div class="sidebar-body" id="sidebarBody">
+    <p style="padding:20px 10px;font-size:11px;color:var(--ink-600)">Lade Fotos…</p>
+  </div>
 </aside>
 
 <button class="sidebar-toggle" id="sidebarOpen" aria-label="Sidebar öffnen">
@@ -405,10 +464,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 </div>
 
 <script>
-const PHOTOS = <?= $photos_json ?>;
-const NO_GPS = <?= $no_gps_json ?>;
-
-// ── Map ───────────────────────────────────────────────────────
+// ── Map (setup before data loads) ─────────────────────────────
 const map = L.map('map', { zoomControl: true, scrollWheelZoom: true })
   .setView([<?= $center_lat ?>, <?= $center_lng ?>], 14);
 
@@ -417,36 +473,12 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
   maxZoom: 19, subdomains: 'abcd',
 }).addTo(map);
 
-if (PHOTOS.length > 0) {
-  map.fitBounds(L.latLngBounds(PHOTOS.map(p => [p.lat, p.lng])), { padding: [120, 380] });
-}
+// ── Shared state ──────────────────────────────────────────────
+let PHOTOS = [], NO_GPS = [];
+let markers = [], markerCluster = null;
+let lbCurrent = { list: 'gps', i: -1 };
 
-// ── Markers ───────────────────────────────────────────────────
-const markerCluster = L.markerClusterGroup({
-  maxClusterRadius: 60,
-  showCoverageOnHover: false,
-  iconCreateFunction(cluster) {
-    const n = cluster.getChildCount();
-    return L.divIcon({ html: `<div class="ci">${n}</div>`, className: 'photo-cluster', iconSize: [44, 44], iconAnchor: [22, 22] });
-  },
-});
-
-const markers = PHOTOS.map((p, i) => {
-  const icon = L.divIcon({
-    className: 'photo-marker-wrap',
-    html: `<div class="photo-marker" data-idx="${i}"><span class="thumb" style="background-image:url('${p.path}')"></span></div>`,
-    iconSize: [42, 42], iconAnchor: [21, 21],
-  });
-  const m = L.marker([p.lat, p.lng], { icon });
-  m.on('click', () => openLightbox(i, false));
-  return m;
-});
-markers.forEach(m => markerCluster.addLayer(m));
-map.addLayer(markerCluster);
-
-// ── Sidebar (virtual scroll) ──────────────────────────────────
-const $body = document.getElementById('sidebarBody');
-
+// ── Utilities ─────────────────────────────────────────────────
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
 function fmtDate(s) {
@@ -455,28 +487,11 @@ function fmtDate(s) {
   return isNaN(d) ? s : d.toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-let lbCurrent = { list: 'gps', i: -1 };
-
+// ── Sidebar (virtual scroll) ──────────────────────────────────
+const $body = document.getElementById('sidebarBody');
 const ROW_H = 62, LABEL_H = 40, BUFFER = 8;
 
-const FLAT = [];
-if (PHOTOS.length) {
-  FLAT.push({ type: 'label', text: 'Mit GPS',   count: PHOTOS.length });
-  PHOTOS.forEach((p, i)  => FLAT.push({ type: 'row', kind: 'gps',   idx: i, p }));
-} else {
-  FLAT.push({ type: 'empty' });
-}
-if (NO_GPS.length) {
-  FLAT.push({ type: 'label', text: 'Ohne GPS', count: NO_GPS.length });
-  NO_GPS.forEach((p, i) => FLAT.push({ type: 'row', kind: 'nogps', idx: i, p }));
-}
-
-const TOPS = new Int32Array(FLAT.length + 1);
-for (let i = 0; i < FLAT.length; i++) {
-  const h = FLAT[i].type === 'label' ? LABEL_H : FLAT[i].type === 'empty' ? 36 : ROW_H;
-  TOPS[i + 1] = TOPS[i] + h;
-}
-const TOTAL_H = TOPS[FLAT.length];
+let FLAT = [], TOPS = null, TOTAL_H = 0;
 
 function renderItem(item) {
   if (item.type === 'label') {
@@ -491,12 +506,13 @@ function renderItem(item) {
     ? `<span><span class="gps-dot">◉</span> ${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>`
     : `<span>${fmtDate(p.date)}</span><span>kein GPS</span>`;
   return `<div class="photo-row${kind === 'nogps' ? ' no-gps' : ''}${active}" data-kind="${kind}" data-idx="${idx}">
-    <div class="thumb" style="background-image:url('${p.path}')"></div>
+    <div class="thumb" style="background-image:url('${p.thumb}')"></div>
     <div class="info"><div class="name">${esc(p.name)}</div><div class="meta">${meta}</div></div>
   </div>`;
 }
 
 function renderVirtual() {
+  if (!TOPS) return;
   const st = $body.scrollTop;
   const ch = $body.clientHeight || 400;
 
@@ -538,7 +554,6 @@ function scrollSidebarTo(kind, i) {
 }
 
 $body.addEventListener('scroll', renderVirtual, { passive: true });
-renderVirtual();
 
 document.getElementById('sidebarClose').addEventListener('click', () =>
   document.getElementById('sidebar').classList.add('is-collapsed'));
@@ -568,7 +583,7 @@ function renderThumbs(kind, activeIdx) {
     const div = document.createElement('div');
     div.className = 't' + (i === activeIdx ? ' is-active' : '');
     div.dataset.i = i;
-    div.style.backgroundImage = `url('${list[i].path}')`;
+    div.style.backgroundImage = `url('${list[i].thumb}')`;
     div.addEventListener('click', () => showAt(lbCurrent.list, i));
     $lbThumbs.appendChild(div);
   }
@@ -626,6 +641,69 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft')  nudge(-1);
   if (e.key === 'ArrowRight') nudge(+1);
 });
+
+// ── Async data load ───────────────────────────────────────────
+function initApp(photos, noGps) {
+  PHOTOS = photos;
+  NO_GPS = noGps;
+
+  // Build markers
+  markerCluster = L.markerClusterGroup({
+    maxClusterRadius: 60,
+    showCoverageOnHover: false,
+    iconCreateFunction(cluster) {
+      const n = cluster.getChildCount();
+      return L.divIcon({ html: `<div class="ci">${n}</div>`, className: 'photo-cluster', iconSize: [44, 44], iconAnchor: [22, 22] });
+    },
+  });
+
+  markers = PHOTOS.map((p, i) => {
+    const icon = L.divIcon({
+      className: 'photo-marker-wrap',
+      html: `<div class="photo-marker" data-idx="${i}"><span class="thumb" style="background-image:url('${p.thumb}')"></span></div>`,
+      iconSize: [42, 42], iconAnchor: [21, 21],
+    });
+    const m = L.marker([p.lat, p.lng], { icon });
+    m.on('click', () => openLightbox(i, false));
+    return m;
+  });
+  markers.forEach(m => markerCluster.addLayer(m));
+  map.addLayer(markerCluster);
+
+  if (PHOTOS.length > 0) {
+    map.fitBounds(L.latLngBounds(PHOTOS.map(p => [p.lat, p.lng])), { padding: [120, 380] });
+  }
+
+  // Build virtual scroll index
+  FLAT = [];
+  if (PHOTOS.length) {
+    FLAT.push({ type: 'label', text: 'Mit GPS',  count: PHOTOS.length });
+    PHOTOS.forEach((p, i)  => FLAT.push({ type: 'row', kind: 'gps',   idx: i, p }));
+  } else {
+    FLAT.push({ type: 'empty' });
+  }
+  if (NO_GPS.length) {
+    FLAT.push({ type: 'label', text: 'Ohne GPS', count: NO_GPS.length });
+    NO_GPS.forEach((p, i) => FLAT.push({ type: 'row', kind: 'nogps', idx: i, p }));
+  }
+
+  const newTOPS = new Int32Array(FLAT.length + 1);
+  for (let i = 0; i < FLAT.length; i++) {
+    const h = FLAT[i].type === 'label' ? LABEL_H : FLAT[i].type === 'empty' ? 36 : ROW_H;
+    newTOPS[i + 1] = newTOPS[i] + h;
+  }
+  TOPS    = newTOPS;
+  TOTAL_H = TOPS[FLAT.length];
+
+  renderVirtual();
+}
+
+fetch('?api=photos')
+  .then(r => r.json())
+  .then(d => initApp(d.photos, d.no_gps))
+  .catch(() => {
+    $body.innerHTML = '<p style="padding:20px 10px;font-size:11px;color:var(--ink-600)">Fehler beim Laden der Fotos.</p>';
+  });
 </script>
 <?php endif; ?>
 </body>
