@@ -245,7 +245,7 @@ function applyTripFilter(slug) {
     const photos = slug ? PHOTOS.filter(p => p.trip === slug) : PHOTOS;
     const noGps  = slug ? NO_GPS.filter(p => p.trip === slug) : NO_GPS;
     const total  = photos.length + noGps.length;
-    $sidebarMeta.textContent = `${total} photo${total !== 1 ? 's' : ''} · ${photos.length} with GPS`;
+    $sidebarMeta.textContent = `${total} photo${total !== 1 ? 's' : ''}`;
   }
 
   markerCluster.clearLayers();

@@ -255,7 +255,7 @@ _SIDEBAR = """\
   <div class="sidebar-head">
     <div>
       <div class="title" id="sidebarTitle">Index<em>.</em></div>
-      <div class="meta" id="sidebarMeta">{total} photo{s} · {gps_count} with GPS</div>
+      <div class="meta" id="sidebarMeta">{total} photo{s}</div>
     </div>
     <button class="close" id="sidebarClose" aria-label="Close sidebar">
       <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
