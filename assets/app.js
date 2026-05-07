@@ -220,12 +220,33 @@ function buildPillBar(trips, initialActive) {
   }
 }
 
+const $appTitle    = document.getElementById('appTitle');
+const $sidebarTitle = document.getElementById('sidebarTitle');
+const $sidebarMeta  = document.getElementById('sidebarMeta');
+const _baseTitle    = $appTitle ? $appTitle.firstChild.textContent : '';
+
 function applyTripFilter(slug) {
   activeTrip = slug;
 
   $pills.querySelectorAll('.trip-pill').forEach(btn => {
     btn.classList.toggle('is-active', btn.dataset.trip === (slug ?? ''));
   });
+
+  const trip = slug ? TRIPS.find(t => t.slug === slug) : null;
+  const label = trip ? trip.label : null;
+
+  if ($appTitle) {
+    $appTitle.firstChild.textContent = label ?? _baseTitle;
+  }
+  if ($sidebarTitle) {
+    $sidebarTitle.innerHTML = label ? `${esc(label)}<em>.</em>` : 'Index<em>.</em>';
+  }
+  if ($sidebarMeta) {
+    const photos = slug ? PHOTOS.filter(p => p.trip === slug) : PHOTOS;
+    const noGps  = slug ? NO_GPS.filter(p => p.trip === slug) : NO_GPS;
+    const total  = photos.length + noGps.length;
+    $sidebarMeta.textContent = `${total} photo${total !== 1 ? 's' : ''} · ${photos.length} with GPS`;
+  }
 
   markerCluster.clearLayers();
   markers.forEach((m, i) => {

@@ -231,7 +231,7 @@ _HEADER = """\
 <header class="app-header">
   <div class="brand">
     <span class="mark"></span>
-    <h1>{title}<em>.</em></h1>
+    <h1 id="appTitle">{title}<em>.</em></h1>
     <span class="sub">Photo Map · {year}</span>
   </div>
   <div class="header-meta">
@@ -254,8 +254,8 @@ _SIDEBAR = """\
 <aside class="sidebar" id="sidebar" aria-label="Photo index">
   <div class="sidebar-head">
     <div>
-      <div class="title">Index<em>.</em></div>
-      <div class="meta">{total} photo{s} · {gps_count} with GPS</div>
+      <div class="title" id="sidebarTitle">Index<em>.</em></div>
+      <div class="meta" id="sidebarMeta">{total} photo{s} · {gps_count} with GPS</div>
     </div>
     <button class="close" id="sidebarClose" aria-label="Close sidebar">
       <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
