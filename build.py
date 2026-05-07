@@ -482,7 +482,7 @@ def main():
     ap.add_argument('--trips-dir',    default='./trips',            metavar='PATH', help='Source trips directory')
     ap.add_argument('--output',       default='./dist',             metavar='PATH', help='Output directory')
     ap.add_argument('--cache',        default='./build-cache.json', metavar='PATH', help='EXIF + geocoding cache')
-    ap.add_argument('--php-file',     default='./index.php',        metavar='PATH', help='index.php to extract CSS/JS from')
+    ap.add_argument('--php-file',     default='./template.php',     metavar='PATH', help='template.php to extract CSS/JS from')
     ap.add_argument('--title',        default='Photo Map',                          help='Site title')
     ap.add_argument('--no-geocode',   action='store_true',  help='Skip Nominatim geocoding')
     ap.add_argument('--force-thumbs', action='store_true',  help='Regenerate all thumbnails')
