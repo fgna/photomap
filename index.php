@@ -16,6 +16,7 @@ $THUMB_DIR   = __DIR__ . '/.thumbnails/';
 $THUMB_SIZE  = 240;         // square thumbnail px
 $RESIZED_DIR = __DIR__ . '/.resized/';
 $RESIZED_MAX = 2048;        // max dimension for display images (lightbox) in px
+$DELETE_ORIGINALS_BELOW_MB = 0; // delete original after resize when free space < N MB (0 = never)
 $EXTENSIONS = ['jpg', 'jpeg', 'webp', 'png', 'heic', 'tiff', 'tif'];
 $CACHE_VER  = 3;
 
@@ -96,6 +97,12 @@ if (isset($_GET['full'])) {
             header('Location: images/' . rawurlencode($file), true, 302);
             exit;
         }
+    }
+
+    // Delete original once a valid resized copy exists and space is tight
+    if ($DELETE_ORIGINALS_BELOW_MB > 0 && is_file($resized) && is_file($source)) {
+        $free_mb = @disk_free_space(__DIR__) / 1048576;
+        if ($free_mb !== false && $free_mb < $DELETE_ORIGINALS_BELOW_MB) @unlink($source);
     }
 
     header('Content-Type: image/jpeg');
