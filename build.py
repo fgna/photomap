@@ -168,14 +168,13 @@ def nominatim_reverse(lat, lng):
         return None
 
 
-# ── JS/CSS extraction from index.php ─────────────────────────────────────────
+# ── JS/CSS extraction ────────────────────────────────────────────────────────
 
-# Exact fetch block to replace (must match index.php verbatim)
+# Exact fetch block to replace (must match assets/app.js verbatim)
 _FETCH_BLOCK = """fetch('?api=photos')
   .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
   .then(d => {
     initApp(d.photos, d.no_gps, d.trips ?? [], d.active_trip ?? null);
-    if (d.geocoding_pending) scheduleGeocodeRefresh();
   })
   .catch(err => {
     const p = document.createElement('p');
@@ -193,8 +192,9 @@ _STATIC_INIT = """(function () {
 
 def extract_css_js(assets_dir):
     assets = Path(assets_dir)
-    css = (assets / 'style.css').read_text(encoding='utf-8')
-    js  = (assets / 'app.js').read_text(encoding='utf-8')
+    # Normalise line endings so _FETCH_BLOCK matching works on Windows too
+    css = (assets / 'style.css').read_text(encoding='utf-8').replace('\r\n', '\n')
+    js  = (assets / 'app.js').read_text(encoding='utf-8').replace('\r\n', '\n')
     if _FETCH_BLOCK not in js:
         raise RuntimeError(
             'Could not find the fetch startup block in assets/app.js — '
@@ -553,6 +553,8 @@ def main():
     )
 
     if args.ftp_host:
+        if not args.ftp_user:
+            ap.error('--ftp-user is required when --ftp-host is set')
         password = (
             args.ftp_password
             or os.environ.get('FTP_PASSWORD')

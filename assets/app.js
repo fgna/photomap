@@ -26,26 +26,6 @@ function fmtDateTime(s) {
   return s;
 }
 
-// ── Geocoding refresh ─────────────────────────────────────────
-function scheduleGeocodeRefresh() {
-  setTimeout(() => {
-    fetch('?api=locations')
-      .then(r => r.json())
-      .then(d => {
-        let changed = false;
-        for (const p of PHOTOS) {
-          const key = `${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;
-          if (key in d.locations && p.loc !== d.locations[key]) {
-            p.loc = d.locations[key]; changed = true;
-          }
-        }
-        if (changed) renderVirtual();
-        if (d.pending) scheduleGeocodeRefresh();
-      })
-      .catch(err => { console.warn('Geocode refresh failed:', err); scheduleGeocodeRefresh(); });
-  }, 6000);
-}
-
 // ── Sidebar virtual scroll ────────────────────────────────────
 const $body = document.getElementById('sidebarBody');
 const ROW_H = 62, LABEL_H = 36, TRIP_H = 48, BUFFER = 8;
@@ -419,7 +399,6 @@ fetch('?api=photos')
   .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
   .then(d => {
     initApp(d.photos, d.no_gps, d.trips ?? [], d.active_trip ?? null);
-    if (d.geocoding_pending) scheduleGeocodeRefresh();
   })
   .catch(err => {
     const p = document.createElement('p');
