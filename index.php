@@ -18,7 +18,7 @@ $RESIZED_DIR = __DIR__ . '/.resized/';
 $RESIZED_MAX = 2048;        // max dimension for display images (lightbox) in px
 $DELETE_ORIGINALS_BELOW_MB = 0; // delete original after resize when free space < N MB (0 = never)
 $EXTENSIONS = ['jpg', 'jpeg', 'webp', 'png', 'heic', 'tiff', 'tif'];
-$CACHE_VER  = 4;
+$CACHE_VER  = 5;
 
 // ── Thumbnail generation (shared) ───────────────────────────
 // Returns true on success, false when GD cannot decode the format.
@@ -40,6 +40,33 @@ function make_thumbnail(string $source, string $dest, int $size): bool {
     imagejpeg($dst, $tmp, 85);
     imagedestroy($src_img);
     imagedestroy($dst);
+    rename($tmp, $dest);
+    return true;
+}
+
+// Returns true on success, false when GD cannot decode the format.
+function make_resized(string $source, string $dest, int $max): bool {
+    $ext     = strtolower(pathinfo($source, PATHINFO_EXTENSION));
+    $src_img = match(true) {
+        in_array($ext, ['jpg', 'jpeg']) => @imagecreatefromjpeg($source),
+        $ext === 'png'                  => @imagecreatefrompng($source),
+        $ext === 'webp'                 => @imagecreatefromwebp($source),
+        default                         => false,
+    };
+    if (!$src_img) return false;
+    $sw = imagesx($src_img); $sh = imagesy($src_img);
+    $tmp = $dest . '.tmp.' . getmypid();
+    if ($sw > $max || $sh > $max) {
+        if ($sw > $sh) { $dw = $max; $dh = (int)round($sh * $max / $sw); }
+        else            { $dh = $max; $dw = (int)round($sw * $max / $sh); }
+        $dst = imagecreatetruecolor($dw, $dh);
+        imagecopyresampled($dst, $src_img, 0, 0, 0, 0, $dw, $dh, $sw, $sh);
+        imagejpeg($dst, $tmp, 85);
+        imagedestroy($dst);
+    } else {
+        imagejpeg($src_img, $tmp, 92);
+    }
+    imagedestroy($src_img);
     rename($tmp, $dest);
     return true;
 }
@@ -99,31 +126,7 @@ if (isset($_GET['full'])) {
     $imtime  = (int)filemtime($source);
 
     if (!is_file($resized) || (int)filemtime($resized) < $imtime) {
-        $ext     = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-        $src_img = match(true) {
-            in_array($ext, ['jpg', 'jpeg']) => @imagecreatefromjpeg($source),
-            $ext === 'png'                  => @imagecreatefrompng($source),
-            $ext === 'webp'                 => @imagecreatefromwebp($source),
-            default                         => false,
-        };
-        if ($src_img) {
-            $sw = imagesx($src_img); $sh = imagesy($src_img);
-            if ($sw > $RESIZED_MAX || $sh > $RESIZED_MAX) {
-                if ($sw > $sh) { $dw = $RESIZED_MAX; $dh = (int)round($sh * $RESIZED_MAX / $sw); }
-                else            { $dh = $RESIZED_MAX; $dw = (int)round($sw * $RESIZED_MAX / $sh); }
-                $dst = imagecreatetruecolor($dw, $dh);
-                imagecopyresampled($dst, $src_img, 0, 0, 0, 0, $dw, $dh, $sw, $sh);
-                $tmp = $resized . '.tmp.' . getmypid();
-                imagejpeg($dst, $tmp, 85);
-                imagedestroy($dst);
-                rename($tmp, $resized);
-            } else {
-                $tmp = $resized . '.tmp.' . getmypid();
-                imagejpeg($src_img, $tmp, 92); // already small — normalise format
-                rename($tmp, $resized);
-            }
-            imagedestroy($src_img);
-        } else {
+        if (!make_resized($source, $resized, $RESIZED_MAX)) {
             header('Location: images/' . rawurlencode($file), true, 302);
             exit;
         }
@@ -259,7 +262,18 @@ function read_photo_meta(string $path): array {
 function load_cache(string $path, int $ver): array {
     if (!is_file($path)) return ['v' => $ver, 'f' => []];
     $data = @json_decode(@file_get_contents($path), true);
-    return (is_array($data) && ($data['v'] ?? 0) === $ver) ? $data : ['v' => $ver, 'f' => []];
+    if (!is_array($data)) return ['v' => $ver, 'f' => []];
+    if (($data['v'] ?? 0) !== $ver) {
+        // EXIF version changed — reset only file metadata, preserve geocoding
+        return [
+            'v'         => $ver,
+            'f'         => [],
+            'geo'       => $data['geo']       ?? [],
+            'geo_v'     => $data['geo_v']      ?? 0,
+            'geo_retry' => $data['geo_retry']  ?? [],
+        ];
+    }
+    return $data;
 }
 
 function save_cache(string $path, array $cache): void {
@@ -325,6 +339,20 @@ if (is_dir($IMAGE_DIR)) {
         $cache_dirty        = true;
     }
     $files = $cache['files'];
+
+    // Prune EXIF entries for deleted files (#2)
+    $active_files = array_flip(array_filter($files,
+        fn($f) => in_array(strtolower(pathinfo($f, PATHINFO_EXTENSION)), $EXTENSIONS)));
+    foreach (array_keys($cache['f']) as $cached_file) {
+        if (!isset($active_files[$cached_file])) {
+            unset($cache['f'][$cached_file]);
+            $cache_dirty = true;
+        }
+    }
+
+    if (!is_dir($THUMB_DIR))   @mkdir($THUMB_DIR,   0755, true);
+    if (!is_dir($RESIZED_DIR)) @mkdir($RESIZED_DIR, 0755, true);
+
     foreach ($files as $file) {
         $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
         if (!in_array($ext, $EXTENSIONS)) continue;
@@ -342,11 +370,14 @@ if (is_dir($IMAGE_DIR)) {
             $cache_dirty = true;
         }
 
-        // Collect thumbnails that need generating; created in background after response is sent.
-        if (!is_dir($THUMB_DIR)) @mkdir($THUMB_DIR, 0755, true);
-        $thumb_file = $THUMB_DIR . md5($file) . '.jpg';
+        // Collect thumbnails and resized images that need generating (#5)
+        $thumb_file   = $THUMB_DIR   . md5($file) . '.jpg';
+        $resized_file = $RESIZED_DIR . md5($file) . '.jpg';
         if (!is_file($thumb_file) || (int)filemtime($thumb_file) < $mtime) {
-            $pending_thumbs[] = ['src' => $full_path, 'dst' => $thumb_file];
+            $pending_thumbs[] = ['src' => $full_path, 'dst' => $thumb_file, 'type' => 'thumb'];
+        }
+        if (!is_file($resized_file) || (int)filemtime($resized_file) < $mtime) {
+            $pending_thumbs[] = ['src' => $full_path, 'dst' => $resized_file, 'type' => 'resized'];
         }
 
         $web_path   = '?full=' . rawurlencode($file);
@@ -369,6 +400,29 @@ if (is_dir($IMAGE_DIR)) {
     }
 
     if ($cache_dirty) save_cache($CACHE_FILE, $cache);
+}
+
+// ── Locations API endpoint ───────────────────────────────────
+// Lightweight endpoint used by the JS refresh: returns only {geoKey: loc} pairs
+// and a pending flag. Much smaller than re-fetching the full ?api=photos payload.
+if (isset($_GET['api']) && $_GET['api'] === 'locations') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    $retry_before = time() - 86400;
+    $locs    = [];
+    $pending = false;
+    foreach ($photos_with_gps as $p) {
+        $key = sprintf('%.3f,%.3f', $p['lat'], $p['lng']);
+        if (array_key_exists($key, $cache['geo']) && $cache['geo'][$key] !== null) {
+            $locs[$key] = $cache['geo'][$key];
+        } elseif (!array_key_exists($key, $cache['geo'])
+               || ($cache['geo'][$key] === null && ($cache['geo_retry'][$key] ?? 0) < $retry_before)) {
+            $pending = true;
+        }
+    }
+    echo json_encode(['locations' => $locs, 'pending' => $pending],
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
 }
 
 // ── JSON API endpoint ────────────────────────────────────────
@@ -415,18 +469,20 @@ if (isset($_GET['api']) && $_GET['api'] === 'photos') {
             flush();
         }
 
-        // Generate missing thumbnails (CPU-bound; no rate limit needed).
+        // Generate missing thumbnails and resized images (CPU-bound; no rate limit needed).
         foreach ($pending_thumbs as $t) {
-            make_thumbnail($t['src'], $t['dst'], $THUMB_SIZE);
+            if ($t['type'] === 'thumb') make_thumbnail($t['src'], $t['dst'], $THUMB_SIZE);
+            else                        make_resized($t['src'], $t['dst'], $RESIZED_MAX);
         }
 
-        // Geocode pending locations (≤1 req/s per Nominatim policy).
+        // Geocode pending locations (≤1 req/s per Nominatim policy, save every 10 results).
         if ($needs_geocode) {
             $lock = $CACHE_FILE . '.lock';
             if (is_file($lock) && filemtime($lock) < time() - 90) @unlink($lock);
             $fh = @fopen($lock, 'x');
             if ($fh) {
                 set_time_limit(0);
+                $geo_count = 0;
                 foreach ($photos_with_gps as $p) {
                     $key = sprintf('%.3f,%.3f', $p['lat'], $p['lng']);
                     if (array_key_exists($key, $cache['geo'])
@@ -435,12 +491,12 @@ if (isset($_GET['api']) && $_GET['api'] === 'photos') {
                     }
                     $result = nominatim_reverse($p['lat'], $p['lng']);
                     $cache['geo'][$key] = $result;
-                    if ($result === null) {
-                        $cache['geo_retry'][$key] = time();
-                    }
-                    save_cache($CACHE_FILE, $cache);
+                    if ($result === null) $cache['geo_retry'][$key] = time();
+                    $geo_count++;
+                    if ($geo_count % 10 === 0) save_cache($CACHE_FILE, $cache);
                     sleep(1);
                 }
+                if ($geo_count % 10 !== 0) save_cache($CACHE_FILE, $cache);
                 @fclose($fh);
                 @unlink($lock);
             }
@@ -564,7 +620,11 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 .lightbox .frame{margin:auto;width:min(1200px, 92vw);height:min(800px, 90vh);background:var(--paper);border-radius:18px;box-shadow:var(--shadow-3);position:relative;overflow:hidden;transform:scale(.97);transition:transform .35s cubic-bezier(.2,.8,.2,1);}
 .lightbox.is-open .frame{transform:scale(1)}
 .lb-media{position:absolute;inset:0;background:var(--ink-50);display:flex;align-items:center;justify-content:center;overflow:hidden;}
-.lb-media .image{position:absolute;inset:0;background-size:contain;background-position:center;background-repeat:no-repeat;background-color:var(--ink-50);}
+.lb-media .image{max-width:100%;max-height:100%;object-fit:contain;display:block;opacity:0;transition:opacity .25s;}
+.lb-media.loaded .image{opacity:1}
+@keyframes lb-spin{to{transform:rotate(360deg)}}
+.lb-spinner{position:absolute;width:32px;height:32px;border:2px solid var(--ink-200);border-top-color:var(--accent);border-radius:50%;animation:lb-spin .7s linear infinite;opacity:1;transition:opacity .2s;}
+.lb-media.loaded .lb-spinner{opacity:0;pointer-events:none}
 .lb-nav{position:absolute;top:50%;transform:translateY(-50%);width:48px;height:48px;border-radius:999px;background:color-mix(in oklab, var(--paper) 90%, transparent);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;color:var(--ink);transition:transform .2s, background .2s;z-index:2;}
 .lb-nav:hover{background:var(--paper);transform:translateY(-50%) scale(1.05)}
 .lb-nav.prev{left:24px}.lb-nav.next{right:24px}
@@ -664,8 +724,6 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
     border-radius: 0;
     margin: 0;
   }
-  .lb-media .image { background-size: contain; }
-
   /* Top bar: close (right) + counter (left) */
   .lb-close {
     top: max(12px, env(safe-area-inset-top));
@@ -792,8 +850,9 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 
 <div class="lightbox" id="lightbox" aria-hidden="true" role="dialog">
   <div class="frame" role="document">
-    <div class="lb-media">
-      <div class="image" id="lbImage"></div>
+    <div class="lb-media" id="lbMedia">
+      <div class="lb-spinner"></div>
+      <img class="image" id="lbImage" alt="">
       <button class="lb-close" id="lbClose" aria-label="Close">
         <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
@@ -840,21 +899,22 @@ function fmtDateTime(s) {
 }
 
 // ── Geocoding refresh ─────────────────────────────────────────
-// When the server still has photos to geocode it signals geocoding_pending=true
-// and does the work in the background after sending the response.
-// We schedule one re-fetch so the UI picks up the completed locations.
+// Polls the lightweight ?api=locations endpoint (not the full ?api=photos)
+// and applies updated POI names in-place. O(n) — uses a geoKey lookup object.
 function scheduleGeocodeRefresh() {
   setTimeout(() => {
-    fetch('?api=photos', { cache: 'reload' })
+    fetch('?api=locations')
       .then(r => r.json())
       .then(d => {
         let changed = false;
-        for (const updated of d.photos) {
-          const p = PHOTOS.find(q => q.file === updated.file);
-          if (p && updated.loc !== p.loc) { p.loc = updated.loc; changed = true; }
+        for (const p of PHOTOS) {
+          const key = `${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;
+          if (key in d.locations && p.loc !== d.locations[key]) {
+            p.loc = d.locations[key]; changed = true;
+          }
         }
         if (changed) renderVirtual();
-        if (d.geocoding_pending) scheduleGeocodeRefresh();
+        if (d.pending) scheduleGeocodeRefresh();
       })
       .catch(() => {});
   }, 6000);
@@ -865,6 +925,7 @@ const $body = document.getElementById('sidebarBody');
 const ROW_H = 62, LABEL_H = 40, BUFFER = 8;
 
 let FLAT = [], TOPS = null, TOTAL_H = 0;
+let _rvStart = -1, _rvEnd = -1, _rvActiveKind = null, _rvActiveI = -1;
 
 function renderItem(item) {
   if (item.type === 'label') {
@@ -904,6 +965,12 @@ function renderVirtual() {
   while (end < FLAT.length && TOPS[end] < st + ch) end++;
   end = Math.min(FLAT.length, end + BUFFER);
 
+  // Skip rebuild when visible range and active item are unchanged (#10)
+  if (start === _rvStart && end === _rvEnd
+      && lbCurrent.list === _rvActiveKind && lbCurrent.i === _rvActiveI) return;
+  _rvStart = start; _rvEnd = end;
+  _rvActiveKind = lbCurrent.list; _rvActiveI = lbCurrent.i;
+
   let html = `<div style="height:${TOPS[start]}px" aria-hidden="true"></div>`;
   for (let i = start; i < end; i++) html += renderItem(FLAT[i]);
   html += `<div style="height:${Math.max(0, TOTAL_H - TOPS[end])}px" aria-hidden="true"></div>`;
@@ -941,12 +1008,14 @@ document.getElementById('sidebarOpen').addEventListener('click', () => {
 });
 
 // ── Lightbox ──────────────────────────────────────────────────
-const $lb      = document.getElementById('lightbox');
-const $lbImage = document.getElementById('lbImage');
-const $lbNow   = document.getElementById('lbNow');
-const $lbTotal = document.getElementById('lbTotal');
+const $lb         = document.getElementById('lightbox');
+const $lbMedia    = document.getElementById('lbMedia');
+const $lbImage    = document.getElementById('lbImage');
+const $lbNow      = document.getElementById('lbNow');
+const $lbTotal    = document.getElementById('lbTotal');
 const $lbThumbs   = document.getElementById('lbThumbs');
 const $lbLocation = document.getElementById('lbLocation');
+let activeMarkerEl = null; // track active map marker element directly (#7)
 
 const getList = kind => kind === 'gps' ? PHOTOS : NO_GPS;
 
@@ -975,7 +1044,12 @@ function showAt(kind, i) {
   lbCurrent = { list: kind, i };
   const p = list[i];
 
-  $lbImage.style.backgroundImage = `url('${p.path}')`;
+  // Show spinner while full-res image loads (#9)
+  $lbMedia.classList.remove('loaded');
+  $lbImage.onload  = () => $lbMedia.classList.add('loaded');
+  $lbImage.onerror = () => $lbMedia.classList.add('loaded');
+  $lbImage.src = p.path;
+
   $lbNow.textContent   = (i+1).toString().padStart(2,'0');
   $lbTotal.textContent = list.length.toString().padStart(2,'0');
 
@@ -986,8 +1060,11 @@ function showAt(kind, i) {
     $lbLocation.style.display = 'none';
   }
 
-  document.querySelectorAll('.photo-marker').forEach(el =>
-    el.classList.toggle('is-active', kind === 'gps' && +el.dataset.idx === i));
+  // Update active marker directly instead of querySelectorAll over all markers (#7)
+  if (activeMarkerEl) activeMarkerEl.classList.remove('is-active');
+  activeMarkerEl = kind === 'gps'
+    ? document.querySelector(`.photo-marker[data-idx="${i}"]`) : null;
+  if (activeMarkerEl) activeMarkerEl.classList.add('is-active');
   scrollSidebarTo(kind, i);
   renderThumbs(kind, i);
 }
@@ -1004,8 +1081,9 @@ function closeLightbox() {
   $lb.classList.remove('is-open');
   $lb.setAttribute('aria-hidden', 'true');
   $lb.addEventListener('transitionend', () => { $lb.style.display = ''; }, { once: true });
-  document.querySelectorAll('.photo-marker').forEach(el => el.classList.remove('is-active'));
+  if (activeMarkerEl) { activeMarkerEl.classList.remove('is-active'); activeMarkerEl = null; }
   lbCurrent = { list: lbCurrent.list, i: -1 };
+  _rvActiveI = -1; // force renderVirtual to repaint active state
   renderVirtual();
 }
 
