@@ -93,7 +93,7 @@ if (isset($_GET['thumb'])) {
     $file   = basename($_GET['thumb']);
     $source = $IMAGE_DIR . $file;
     $real   = realpath($source);
-    if ($real === false || strncmp($real, realpath($IMAGE_DIR), strlen(realpath($IMAGE_DIR))) !== 0) {
+    if ($real === false || !str_starts_with($real, realpath($IMAGE_DIR) . DIRECTORY_SEPARATOR)) {
         http_response_code(404); exit;
     }
 
@@ -117,7 +117,7 @@ if (isset($_GET['full'])) {
     $file    = basename($_GET['full']);
     $source  = $IMAGE_DIR . $file;
     $real    = realpath($source);
-    if ($real === false || strncmp($real, realpath($IMAGE_DIR), strlen(realpath($IMAGE_DIR))) !== 0) {
+    if ($real === false || !str_starts_with($real, realpath($IMAGE_DIR) . DIRECTORY_SEPARATOR)) {
         http_response_code(404); exit;
     }
 
@@ -433,7 +433,7 @@ if (isset($_GET['api']) && $_GET['api'] === 'locations') {
         }
     }
     echo json_encode(['locations' => $locs, 'pending' => $pending],
-        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG);
     exit;
 }
 
@@ -519,6 +519,9 @@ if (isset($_GET['api']) && $_GET['api'] === 'photos') {
 
 // ── Main page ────────────────────────────────────────────────
 header('Cache-Control: public, max-age=60, stale-while-revalidate=3600');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: strict-origin-when-cross-origin');
 
 $total = count($photos_with_gps) + count($photos_without_gps);
 ?>
@@ -957,7 +960,7 @@ function renderItem(item) {
     locHtml = '<span>no GPS</span>';
   }
   return `<div class="photo-row${kind === 'nogps' ? ' no-gps' : ''}${active}" data-kind="${kind}" data-idx="${idx}">
-    <div class="thumb" style="background-image:url('${p.thumb}')"></div>
+    <div class="thumb" style="background-image:url('${encodeURI(p.thumb)}')"></div>
     <div class="info"><div class="name">${esc(dateStr)}</div><div class="meta">${locHtml}</div></div>
   </div>`;
 }
@@ -1043,7 +1046,7 @@ function renderThumbs(kind, activeIdx) {
     const div = document.createElement('div');
     div.className = 't' + (i === activeIdx ? ' is-active' : '');
     div.dataset.i = i;
-    div.style.backgroundImage = `url('${list[i].thumb}')`;
+    div.style.backgroundImage = `url('${encodeURI(list[i].thumb)}')`;
     div.addEventListener('click', () => showAt(lbCurrent.list, i));
     $lbThumbs.appendChild(div);
   }
@@ -1140,7 +1143,7 @@ function initApp(photos, noGps) {
   markers = PHOTOS.map((p, i) => {
     const icon = L.divIcon({
       className: 'photo-marker-wrap',
-      html: `<div class="photo-marker" data-idx="${i}"><span class="thumb" style="background-image:url('${p.thumb}')"></span></div>`,
+      html: `<div class="photo-marker" data-idx="${i}"><span class="thumb" style="background-image:url('${encodeURI(p.thumb)}')"></span></div>`,
       iconSize: [42, 42], iconAnchor: [21, 21],
     });
     const m = L.marker([p.lat, p.lng], { icon });
@@ -1186,7 +1189,10 @@ fetch('?api=photos')
   .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
   .then(d => { initApp(d.photos, d.no_gps); if (d.geocoding_pending) scheduleGeocodeRefresh(); })
   .catch(err => {
-    $body.innerHTML = `<p style="padding:20px 10px;font-size:11px;color:var(--ink-600)">Error loading photos: ${err.message}</p>`;
+    const p = document.createElement('p');
+    p.style.cssText = 'padding:20px 10px;font-size:11px;color:var(--ink-600)';
+    p.textContent = `Error loading photos: ${err.message}`;
+    $body.replaceChildren(p);
   });
 </script>
 <?php endif; ?>
