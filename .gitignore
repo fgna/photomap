@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# Build outputs
+dist/
+build-cache.json
+
+# PHP cache
+.photomap-cache.json
+.photomap-cache.json.lock
+
+# Thumbnails and resized images (generated)
+trips/*/.thumbnails/
+trips/*/.resized/
