@@ -43,6 +43,7 @@ Edit the configuration block at the top of `index.php`:
 | `$IMAGE_DIR` | `./images/` | Folder scanned for photos |
 | `$THUMB_SIZE` | `240` | Thumbnail size in pixels (square crop) |
 | `$RESIZED_MAX` | `2048` | Max dimension for lightbox display images in pixels |
+| `$DELETE_ORIGINALS_BELOW_MB` | `0` | Delete original after resize when free disk space falls below N MB (0 = never delete) |
 
 ## Supported formats
 
