@@ -190,7 +190,7 @@ function save_cache(string $path, array $cache): void {
 // Nominatim reverse geocode → POI name or street/place name, or '' if not found.
 function nominatim_reverse(float $lat, float $lng): string {
     $url = sprintf(
-        'https://nominatim.openstreetmap.org/reverse?lat=%.7f&lon=%.7f&format=json&zoom=17',
+        'https://nominatim.openstreetmap.org/reverse?lat=%.7f&lon=%.7f&format=json&zoom=15',
         $lat, $lng
     );
     $ctx  = stream_context_create(['http' => [
@@ -221,7 +221,7 @@ $photos_without_gps = [];
 
 if (is_dir($IMAGE_DIR)) {
     $cache       = load_cache($CACHE_FILE, $CACHE_VER);
-    $GEO_VER = 2; // bump to re-geocode with POI support
+    $GEO_VER = 3; // bump to re-geocode with zoom=15 for broader POI names
     if (!isset($cache['geo']) || ($cache['geo_v'] ?? 0) !== $GEO_VER) {
         $cache['geo']   = [];
         $cache['geo_v'] = $GEO_VER;
