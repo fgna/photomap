@@ -528,9 +528,9 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 const map = L.map('map', { zoomControl: true, scrollWheelZoom: true })
   .setView([<?= $center_lat ?>, <?= $center_lng ?>], 14);
 
-L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · CARTO',
-  maxZoom: 19, subdomains: 'abcd',
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  maxZoom: 19,
 }).addTo(map);
 
 // ── Shared state ──────────────────────────────────────────────
