@@ -1,16 +1,21 @@
 <?php
 // ============================================================
-//  Granada Photo Map — index.php
-//  Liest Fotos aus ./images/, extrahiert GPS-EXIF-Daten und
-//  rendert eine interaktive Karte (OpenStreetMap via Leaflet).
+//  Photo Map — index.php
+//  Single-file PHP app: reads photos from ./images/, extracts
+//  GPS EXIF data, and renders an interactive Leaflet map.
 // ============================================================
+
+// ── Configuration ────────────────────────────────────────────
+$TRIP_NAME  = 'Photo Map';  // shown in browser title and page header
+$MAP_LAT    = 0.0;          // initial map centre (overridden by fitBounds once photos load)
+$MAP_LNG    = 0.0;
 
 $IMAGE_DIR  = __DIR__ . '/images/';
 $CACHE_FILE = __DIR__ . '/.photomap-cache.json';
 $THUMB_DIR  = __DIR__ . '/.thumbnails/';
 $THUMB_SIZE = 240;          // square thumbnail px
 $EXTENSIONS = ['jpg', 'jpeg', 'webp', 'png', 'heic', 'tiff', 'tif'];
-$CACHE_VER  = 3;            // bumped to clear v2 caches after schema review
+$CACHE_VER  = 3;
 
 // ── Thumbnail endpoint ───────────────────────────────────────
 if (isset($_GET['thumb'])) {
@@ -209,7 +214,7 @@ function nominatim_reverse(float $lat, float $lng): string {
         ?? $a['city'] ?? $a['town'] ?? $a['village'] ?? '';
 }
 
-// ── Fotos einlesen ───────────────────────────────────────────
+// ── Read photos ──────────────────────────────────────────────
 
 $photos_with_gps    = [];
 $photos_without_gps = [];
@@ -314,16 +319,14 @@ if (isset($_GET['api']) && $_GET['api'] === 'photos') {
 // ── Main page ────────────────────────────────────────────────
 header('Cache-Control: public, max-age=60, stale-while-revalidate=3600');
 
-$total      = count($photos_with_gps) + count($photos_without_gps);
-$center_lat = 37.1773;
-$center_lng = -3.5986;
+$total = count($photos_with_gps) + count($photos_without_gps);
 ?>
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Granada — Photo Map</title>
+<title><?= htmlspecialchars($TRIP_NAME) ?></title>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -466,12 +469,12 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 <header class="app-header">
   <div class="brand">
     <span class="mark"></span>
-    <h1>Granada<em>.</em></h1>
-    <span class="sub">Photo Atlas · <?= date('Y') ?></span>
+    <h1><?= htmlspecialchars($TRIP_NAME) ?><em>.</em></h1>
+    <span class="sub">Photo Map · <?= date('Y') ?></span>
   </div>
   <div class="header-meta">
     <span><span class="dot"></span>Live</span>
-    <span><span class="count"><?= $total ?></span> Bild<?= $total !== 1 ? 'er' : '' ?></span>
+    <span><span class="count"><?= $total ?></span> photo<?= $total !== 1 ? 's' : '' ?></span>
   </div>
 </header>
 
@@ -480,39 +483,39 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 <?php if ($total === 0): ?>
 <div class="empty-state">
   <div class="card">
-    <h2>Keine Fotos<em>.</em></h2>
-    <p>Lege deine Fotos in den Ordner <code>images/</code> neben dieser Datei.<br>
-       Unterstützte Formate: JPG, WebP, PNG, HEIC, TIFF.</p>
+    <h2>No Photos<em>.</em></h2>
+    <p>Place your photos in the <code>images/</code> folder next to this file.<br>
+       Supported formats: JPG, WebP, PNG, HEIC, TIFF.</p>
   </div>
 </div>
 <?php else: ?>
 
-<aside class="sidebar" id="sidebar" aria-label="Foto-Index">
+<aside class="sidebar" id="sidebar" aria-label="Photo index">
   <div class="sidebar-head">
     <div>
       <div class="title">Index<em>.</em></div>
-      <div class="meta"><?= $total ?> Aufnahme<?= $total !== 1 ? 'n' : '' ?> · <?= count($photos_with_gps) ?> mit GPS</div>
+      <div class="meta"><?= $total ?> photo<?= $total !== 1 ? 's' : '' ?> · <?= count($photos_with_gps) ?> with GPS</div>
     </div>
-    <button class="close" id="sidebarClose" aria-label="Sidebar schließen">
+    <button class="close" id="sidebarClose" aria-label="Close sidebar">
       <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
     </button>
   </div>
   <div class="sidebar-body" id="sidebarBody">
-    <p style="padding:20px 10px;font-size:11px;color:var(--ink-600)">Lade Fotos…</p>
+    <p style="padding:20px 10px;font-size:11px;color:var(--ink-600)">Loading…</p>
   </div>
 </aside>
 
-<button class="sidebar-toggle" id="sidebarOpen" aria-label="Sidebar öffnen">
+<button class="sidebar-toggle" id="sidebarOpen" aria-label="Open sidebar">
   <svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h12"/></svg>
 </button>
 
 <aside class="legend-chip" aria-hidden="true">
   <div class="row">
     <div class="swatch"><div class="inner"></div></div>
-    <div>Klick auf Marker oder Index<br>zum Öffnen der Lightbox.</div>
+    <div>Click a marker or row<br>to open the lightbox.</div>
   </div>
   <div class="row" style="opacity:.85">
-    <kbd>←</kbd><kbd>→</kbd> blättern · <kbd>Esc</kbd> schließen
+    <kbd>←</kbd><kbd>→</kbd> navigate · <kbd>Esc</kbd> close
   </div>
 </aside>
 
@@ -520,13 +523,13 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
   <div class="frame" role="document">
     <div class="lb-media">
       <div class="image" id="lbImage"></div>
-      <button class="lb-close" id="lbClose" aria-label="Schließen">
+      <button class="lb-close" id="lbClose" aria-label="Close">
         <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
-      <button class="lb-nav prev" id="lbPrev" aria-label="Vorheriges Foto">
+      <button class="lb-nav prev" id="lbPrev" aria-label="Previous photo">
         <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
       </button>
-      <button class="lb-nav next" id="lbNext" aria-label="Nächstes Foto">
+      <button class="lb-nav next" id="lbNext" aria-label="Next photo">
         <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
       </button>
       <div class="lb-counter"><span class="now" id="lbNow">1</span>/ <span id="lbTotal">1</span></div>
@@ -538,7 +541,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
 <script>
 // ── Map (setup before data loads) ─────────────────────────────
 const map = L.map('map', { zoomControl: true, scrollWheelZoom: true })
-  .setView([<?= $center_lat ?>, <?= $center_lng ?>], 14);
+  .setView([<?= $MAP_LAT ?>, <?= $MAP_LNG ?>], 2);
 
 L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
   attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · CARTO',
@@ -592,7 +595,7 @@ function renderItem(item) {
     return `<div class="section-label"><span class="num">${item.count.toString().padStart(2,'0')}</span><span>${item.text}</span><span class="line"></span></div>`;
   }
   if (item.type === 'empty') {
-    return `<p style="padding:10px;font-size:11px;color:var(--ink-600)">Keine Fotos mit GPS.</p>`;
+    return `<p style="padding:10px;font-size:11px;color:var(--ink-600)">No photos with GPS.</p>`;
   }
   const { kind, idx, p } = item;
   const active = lbCurrent.list === kind && lbCurrent.i === idx ? ' is-active' : '';
@@ -602,7 +605,7 @@ function renderItem(item) {
     locHtml = p.loc ? `<span>${esc(p.loc)}</span>`
                     : `<span><span class="gps-dot">◉</span> ${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>`;
   } else {
-    locHtml = '<span>kein GPS</span>';
+    locHtml = '<span>no GPS</span>';
   }
   return `<div class="photo-row${kind === 'nogps' ? ' no-gps' : ''}${active}" data-kind="${kind}" data-idx="${idx}">
     <div class="thumb" style="background-image:url('${p.thumb}')"></div>
@@ -776,13 +779,13 @@ function initApp(photos, noGps) {
   // Build virtual scroll index
   FLAT = [];
   if (PHOTOS.length) {
-    FLAT.push({ type: 'label', text: 'Mit GPS',  count: PHOTOS.length });
+    FLAT.push({ type: 'label', text: 'With GPS',  count: PHOTOS.length });
     PHOTOS.forEach((p, i)  => FLAT.push({ type: 'row', kind: 'gps',   idx: i, p }));
   } else {
     FLAT.push({ type: 'empty' });
   }
   if (NO_GPS.length) {
-    FLAT.push({ type: 'label', text: 'Ohne GPS', count: NO_GPS.length });
+    FLAT.push({ type: 'label', text: 'Without GPS', count: NO_GPS.length });
     NO_GPS.forEach((p, i) => FLAT.push({ type: 'row', kind: 'nogps', idx: i, p }));
   }
 
@@ -803,7 +806,7 @@ fetch('?api=photos')
   .then(r => r.json())
   .then(d => initApp(d.photos, d.no_gps))
   .catch(() => {
-    $body.innerHTML = '<p style="padding:20px 10px;font-size:11px;color:var(--ink-600)">Fehler beim Laden der Fotos.</p>';
+    $body.innerHTML = '<p style="padding:20px 10px;font-size:11px;color:var(--ink-600)">Error loading photos.</p>';
   });
 </script>
 <?php endif; ?>
