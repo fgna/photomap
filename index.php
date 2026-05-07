@@ -182,7 +182,7 @@ function save_cache(string $path, array $cache): void {
     @file_put_contents($path, json_encode($cache, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
 }
 
-// Nominatim reverse geocode → street/place name, or '' if not found.
+// Nominatim reverse geocode → POI name or street/place name, or '' if not found.
 function nominatim_reverse(float $lat, float $lng): string {
     $url = sprintf(
         'https://nominatim.openstreetmap.org/reverse?lat=%.7f&lon=%.7f&format=json&zoom=17',
@@ -196,6 +196,13 @@ function nominatim_reverse(float $lat, float $lng): string {
     if (!$json) return '';
     $d = json_decode($json, true);
     if (!is_array($d)) return '';
+
+    // Prefer the matched object's own name when it is a POI/landmark
+    $name  = $d['name'] ?? '';
+    $class = $d['class'] ?? '';
+    $poi_classes = ['tourism', 'historic', 'amenity', 'leisure', 'natural', 'man_made', 'building'];
+    if ($name && in_array($class, $poi_classes, true)) return $name;
+
     $a = $d['address'] ?? [];
     return $a['road'] ?? $a['pedestrian'] ?? $a['footway'] ?? $a['path']
         ?? $a['neighbourhood'] ?? $a['suburb'] ?? $a['city_district']
@@ -209,7 +216,12 @@ $photos_without_gps = [];
 
 if (is_dir($IMAGE_DIR)) {
     $cache       = load_cache($CACHE_FILE, $CACHE_VER);
-    if (!isset($cache['geo'])) $cache['geo'] = [];
+    $GEO_VER = 2; // bump to re-geocode with POI support
+    if (!isset($cache['geo']) || ($cache['geo_v'] ?? 0) !== $GEO_VER) {
+        $cache['geo']   = [];
+        $cache['geo_v'] = $GEO_VER;
+        $cache_dirty    = true;
+    }
     $cache_dirty = false;
 
     $files = scandir($IMAGE_DIR);
