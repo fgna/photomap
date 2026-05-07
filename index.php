@@ -348,6 +348,7 @@ $GEO_VER = 3;
 if (!isset($cache['geo']) || ($cache['geo_v'] ?? 0) !== $GEO_VER) {
     $cache['geo'] = []; $cache['geo_v'] = $GEO_VER; $cache_dirty = true;
 }
+if (!isset($cache['geo_retry'])) { $cache['geo_retry'] = []; $cache_dirty = true; }
 
 if (is_dir($TRIPS_DIR)) {
     foreach (scandir($TRIPS_DIR) ?: [] as $d) {
@@ -993,6 +994,7 @@ let _rvStart = -1, _rvEnd = -1, _rvActiveKind = null, _rvActiveI = -1;
 function itemHeight(item) {
   if (item.type === 'trip_header') return TRIP_H;
   if (item.type === 'label')       return LABEL_H;
+  if (item.type === 'empty')       return LABEL_H;
   return ROW_H;
 }
 
@@ -1151,18 +1153,22 @@ function buildPillBar(trips, initialActive) {
     const label = document.createElement('span');
     label.textContent = trip.label;
 
-    const copyBtn = document.createElement('button');
+    const copyBtn = document.createElement('span');
     copyBtn.className = 'pill-copy';
+    copyBtn.role = 'button';
+    copyBtn.tabIndex = 0;
     copyBtn.title = 'Copy link to this trip';
     copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
-    copyBtn.addEventListener('click', e => {
+    const doCopy = e => {
       e.stopPropagation();
       const url = new URL(location.href);
       url.searchParams.set('trip', trip.slug);
       navigator.clipboard.writeText(url.toString()).catch(() => {});
       copyBtn.title = 'Copied!';
       setTimeout(() => { copyBtn.title = 'Copy link to this trip'; }, 1500);
-    });
+    };
+    copyBtn.addEventListener('click', doCopy);
+    copyBtn.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); doCopy(e); } });
 
     btn.addEventListener('click', () => applyTripFilter(activeTrip === trip.slug ? null : trip.slug));
     btn.appendChild(dot);
