@@ -41,7 +41,8 @@ Edit the configuration block at the top of `index.php`:
 | `$TRIP_NAME` | `'Photo Map'` | Shown in the browser title and page header |
 | `$MAP_LAT` / `$MAP_LNG` | `0.0` / `0.0` | Initial map centre (overridden by `fitBounds` once photos load) |
 | `$IMAGE_DIR` | `./images/` | Folder scanned for photos |
-| `$THUMB_SIZE` | `240` | Thumbnail size in pixels (square) |
+| `$THUMB_SIZE` | `240` | Thumbnail size in pixels (square crop) |
+| `$RESIZED_MAX` | `2048` | Max dimension for lightbox display images in pixels |
 
 ## Supported formats
 
@@ -54,9 +55,10 @@ HEIC and TIFF thumbnails fall back to a redirect to the original file if PHP GD 
 | Path | Contents |
 |---|---|
 | `.photomap-cache.json` | EXIF (GPS + date) and geocoding results per file |
-| `.thumbnails/` | Generated JPEG thumbnails |
+| `.thumbnails/` | 240 × 240 px square-crop JPEGs (markers, sidebar, strip) |
+| `.resized/` | Max-2048 px JPEGs served in the lightbox |
 
-Delete either to force a full rebuild.
+Delete any of these to force a rebuild of that layer.
 
 ## License
 

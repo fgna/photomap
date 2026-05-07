@@ -12,8 +12,10 @@ $MAP_LNG    = 0.0;
 
 $IMAGE_DIR  = __DIR__ . '/images/';
 $CACHE_FILE = __DIR__ . '/.photomap-cache.json';
-$THUMB_DIR  = __DIR__ . '/.thumbnails/';
-$THUMB_SIZE = 240;          // square thumbnail px
+$THUMB_DIR   = __DIR__ . '/.thumbnails/';
+$THUMB_SIZE  = 240;         // square thumbnail px
+$RESIZED_DIR = __DIR__ . '/.resized/';
+$RESIZED_MAX = 2048;        // max dimension for display images (lightbox) in px
 $EXTENSIONS = ['jpg', 'jpeg', 'webp', 'png', 'heic', 'tiff', 'tif'];
 $CACHE_VER  = 3;
 
@@ -56,6 +58,50 @@ if (isset($_GET['thumb'])) {
     header('Cache-Control: public, max-age=31536000, immutable');
     header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $imtime) . ' GMT');
     readfile($thumb);
+    exit;
+}
+
+// ── Display-size image endpoint ──────────────────────────────
+if (isset($_GET['full'])) {
+    $file    = basename($_GET['full']);
+    $source  = $IMAGE_DIR . $file;
+    if (!is_file($source)) { http_response_code(404); exit; }
+
+    if (!is_dir($RESIZED_DIR)) @mkdir($RESIZED_DIR, 0755, true);
+    $resized = $RESIZED_DIR . md5($file) . '.jpg';
+    $imtime  = (int)filemtime($source);
+
+    if (!is_file($resized) || (int)filemtime($resized) < $imtime) {
+        $ext     = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+        $src_img = match(true) {
+            in_array($ext, ['jpg', 'jpeg']) => @imagecreatefromjpeg($source),
+            $ext === 'png'                  => @imagecreatefrompng($source),
+            $ext === 'webp'                 => @imagecreatefromwebp($source),
+            default                         => false,
+        };
+        if ($src_img) {
+            $sw = imagesx($src_img); $sh = imagesy($src_img);
+            if ($sw > $RESIZED_MAX || $sh > $RESIZED_MAX) {
+                if ($sw > $sh) { $dw = $RESIZED_MAX; $dh = (int)round($sh * $RESIZED_MAX / $sw); }
+                else            { $dh = $RESIZED_MAX; $dw = (int)round($sw * $RESIZED_MAX / $sh); }
+                $dst = imagecreatetruecolor($dw, $dh);
+                imagecopyresampled($dst, $src_img, 0, 0, 0, 0, $dw, $dh, $sw, $sh);
+                imagejpeg($dst, $resized, 85);
+                imagedestroy($dst);
+            } else {
+                imagejpeg($src_img, $resized, 92); // already small — normalise format
+            }
+            imagedestroy($src_img);
+        } else {
+            header('Location: images/' . rawurlencode($file), true, 302);
+            exit;
+        }
+    }
+
+    header('Content-Type: image/jpeg');
+    header('Cache-Control: public, max-age=31536000, immutable');
+    header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $imtime) . ' GMT');
+    readfile($resized);
     exit;
 }
 
@@ -248,7 +294,7 @@ if (is_dir($IMAGE_DIR)) {
             $cache_dirty = true;
         }
 
-        $web_path   = 'images/' . rawurlencode($file);
+        $web_path   = '?full=' . rawurlencode($file);
         $thumb_url  = '?thumb=' . rawurlencode($file);
         $name_display = ucwords(str_replace(['_', '-'], ' ', pathinfo($file, PATHINFO_FILENAME)));
         $info = ['file' => $file, 'path' => $web_path, 'thumb' => $thumb_url,
