@@ -2,6 +2,42 @@
 
 An interactive photo map with a scrollable sidebar, lightbox, and reverse geocoding. Organise photos into trip folders, run one build command, and deploy the output to any static host.
 
+## Docker
+
+A pre-built image is published to the GitHub Container Registry on every push to `main`:
+
+```bash
+docker pull ghcr.io/fgna/photomap:main
+```
+
+Run the builder by mounting your `trips/` folder and an output directory:
+
+```bash
+docker run --rm \
+  -v /path/to/trips:/photomap/trips \
+  -v /path/to/dist:/photomap/dist \
+  ghcr.io/fgna/photomap:main
+```
+
+To persist the geocoding cache across runs (avoids re-querying Nominatim):
+
+```bash
+docker run --rm \
+  -v /path/to/trips:/photomap/trips \
+  -v /path/to/dist:/photomap/dist \
+  -v /path/to/build-cache.json:/photomap/build-cache.json \
+  ghcr.io/fgna/photomap:main
+```
+
+Pass extra options after the image name:
+
+```bash
+docker run --rm \
+  -v /path/to/trips:/photomap/trips \
+  -v /path/to/dist:/photomap/dist \
+  ghcr.io/fgna/photomap:main --title "Europe 2024" --no-geocode
+```
+
 ## Quick start
 
 ```bash
