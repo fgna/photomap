@@ -22,12 +22,15 @@ docker run --rm \
 To persist the geocoding cache across runs (avoids re-querying Nominatim):
 
 ```bash
+touch /path/to/build-cache.json   # must exist as a file before mounting
 docker run --rm \
   -v /path/to/trips:/photomap/trips \
   -v /path/to/dist:/photomap/dist \
   -v /path/to/build-cache.json:/photomap/build-cache.json \
   ghcr.io/fgna/photomap:main
 ```
+
+> **Note:** The cache file must already exist on the host before mounting. If the path does not exist, Docker creates it as a directory and the cache will not be persisted (the build still succeeds).
 
 Pass extra options after the image name:
 
