@@ -44,7 +44,7 @@ TRIP_COLORS = [
 
 def load_cache(path):
     p = Path(path)
-    if p.exists():
+    if p.is_file():
         try:
             return json.loads(p.read_text(encoding='utf-8'))
         except Exception:
@@ -53,6 +53,15 @@ def load_cache(path):
 
 
 def save_cache(path, cache):
+    p = Path(path)
+    if p.is_dir():
+        print(
+            f"Warning: cache path '{path}' is a directory, not a file — skipping cache save.\n"
+            "Tip: create an empty file on the host before mounting it:\n"
+            "  touch /path/to/build-cache.json",
+            file=sys.stderr,
+        )
+        return
     tmp = str(path) + '.tmp.' + str(os.getpid())
     Path(tmp).write_text(json.dumps(cache, ensure_ascii=False), encoding='utf-8')
     os.replace(tmp, path)
