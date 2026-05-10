@@ -17,10 +17,10 @@ cp ~/Photos/paris/*.jpg trips/paris-2024/
 cp ~/Photos/iceland/*.jpg trips/iceland-2023/
 
 # Build
-python build.py
+python3 build.py
 
 # Preview locally
-python -m http.server -d dist 8080
+python3 -m http.server -d dist 8080
 # → open http://localhost:8080
 ```
 
