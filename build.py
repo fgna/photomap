@@ -9,6 +9,7 @@ Usage:
   python build.py
   python build.py --trips-dir ./trips --output ./dist --title "My Map"
   python build.py --no-geocode          # skip Nominatim calls
+  python build.py --retry-geocode       # retry failed cached location lookups
   python build.py --force-thumbs        # regenerate all thumbnails
 """
 
@@ -377,12 +378,25 @@ def deploy_ftp(dist_dir, host, user, password, remote_dir, use_tls=False):
 
 # ── Main build ────────────────────────────────────────────────────────────────
 
-def build(trips_dir, output_dir, cache_file, assets_dir, title, no_geocode, force_thumbs):
+def build(trips_dir, output_dir, cache_file, assets_dir, title, no_geocode, force_thumbs, retry_geocode=False):
     trips_path  = Path(trips_dir)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
     cache = load_cache(cache_file)
+    cache.setdefault('geo', {})
+    cache.setdefault('geo_retry', {})
+    cache.setdefault('files', {})
+
+    if retry_geocode:
+        failed_geo = [key for key, value in cache['geo'].items() if value is None]
+        for key in failed_geo:
+            cache['geo'].pop(key, None)
+            cache['geo_retry'].pop(key, None)
+        if failed_geo:
+            print(f'Retrying {len(failed_geo)} failed geocoding result(s).')
+        else:
+            print('No failed geocoding results to retry.')
 
     trip_slugs = []
     if trips_path.exists():
@@ -508,6 +522,8 @@ def build(trips_dir, output_dir, cache_file, assets_dir, title, no_geocode, forc
 
     total     = len(all_photos_gps) + len(all_photos_no_gps)
     gps_count = len(all_photos_gps)
+    named_count = sum(1 for p in all_photos_gps if p.get('loc'))
+    unresolved_count = gps_count - named_count
     year      = datetime.now().year
 
     data = {
@@ -525,6 +541,7 @@ def build(trips_dir, output_dir, cache_file, assets_dir, title, no_geocode, forc
     size_kb = out.stat().st_size // 1024
     print(f'\nWrote {out}  ({size_kb} KB)')
     print(f'{total} photo(s) · {gps_count} with GPS · {len(trips_meta)} trip(s)')
+    print(f'{named_count} named location(s) · {unresolved_count} unresolved')
 
 
 def main():
@@ -538,6 +555,7 @@ def main():
     ap.add_argument('--assets',        default='./assets',           metavar='PATH', help='Directory containing style.css and app.js')
     ap.add_argument('--title',        default='Photo Map',                          help='Site title')
     ap.add_argument('--no-geocode',   action='store_true',  help='Skip Nominatim geocoding')
+    ap.add_argument('--retry-geocode', action='store_true', help='Retry previously failed geocoding results')
     ap.add_argument('--force-thumbs', action='store_true',  help='Regenerate all thumbnails')
 
     ftp = ap.add_argument_group('FTP deploy (optional)')
@@ -551,14 +569,18 @@ def main():
 
     args = ap.parse_args()
 
+    if args.retry_geocode and args.no_geocode:
+        ap.error('--retry-geocode cannot be used with --no-geocode')
+
     build(
-        trips_dir    = args.trips_dir,
-        output_dir   = args.output,
-        cache_file   = args.cache,
-        assets_dir   = args.assets,
-        title        = args.title,
-        no_geocode   = args.no_geocode,
-        force_thumbs = args.force_thumbs,
+        trips_dir     = args.trips_dir,
+        output_dir    = args.output,
+        cache_file    = args.cache,
+        assets_dir    = args.assets,
+        title         = args.title,
+        no_geocode    = args.no_geocode,
+        force_thumbs  = args.force_thumbs,
+        retry_geocode = args.retry_geocode,
     )
 
     if args.ftp_host:
