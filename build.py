@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -400,10 +401,32 @@ def build(trips_dir, output_dir, cache_file, assets_dir, title, no_geocode, forc
 
     trip_slugs = []
     if trips_path.exists():
-        trip_slugs = sorted(
+        candidates = sorted(
             d for d in os.listdir(trips_path)
             if (trips_path / d).is_dir() and not d.startswith('.')
         )
+        for slug in candidates:
+            trip_dir = trips_path / slug
+            has_photos = any(
+                p.is_file() and p.suffix.lower() in EXTENSIONS
+                for p in trip_dir.iterdir()
+            )
+            if has_photos:
+                trip_slugs.append(slug)
+            else:
+                print(f'\n[{slug}] 0 photo(s) — skipped')
+
+    generated_trips = output_path / 'trips'
+    if generated_trips.exists():
+        active_slugs = set(trip_slugs)
+        for generated_trip in generated_trips.iterdir():
+            if (
+                generated_trip.is_dir()
+                and not generated_trip.name.startswith('.')
+                and generated_trip.name not in active_slugs
+            ):
+                print(f'Removing stale generated trip: {generated_trip.name}')
+                shutil.rmtree(generated_trip)
 
     all_photos_gps    = []
     all_photos_no_gps = []
