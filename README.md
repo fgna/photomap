@@ -4,7 +4,7 @@ PhotoMap turns folders of geotagged travel photos into an interactive static map
 
 **Live demo:** [Granada 2026](http://www.freya-gnam.de/photomap/)
 
-[![PhotoMap live demo showing Granada 2026](docs/photomap-live.jpg)](http://www.freya-gnam.de/photomap/)
+[![PhotoMap live demo showing Granada 2026](docs/photomap-live-v2.png)](http://www.freya-gnam.de/photomap/)
 
 The project is designed for a simple workflow: organise photos by trip, run one build command, and publish the generated `dist/` directory to any static host.
 
