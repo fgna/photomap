@@ -1,15 +1,28 @@
 # Python
 __pycache__/
 *.pyc
+.venv/
+venv/
+
+# Local source photos
+trips/
 
 # Build outputs
 dist/
 build-cache.json
 
-# PHP cache
+# Local runtime caches
 .photomap-cache.json
 .photomap-cache.json.lock
 
-# Thumbnails and resized images (generated)
-trips/*/.thumbnails/
-trips/*/.resized/
+# Local environment / secrets
+.env
+.env.*
+
+# Temporary root screenshots
+/Screenshot*.png
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
