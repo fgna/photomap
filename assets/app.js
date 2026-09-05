@@ -2,9 +2,9 @@
 const map = L.map('map', { zoomControl: true, scrollWheelZoom: true })
   .setView([0, 0], 2);
 
-L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · CARTO',
-  maxZoom: 19, subdomains: 'abcd',
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+  maxZoom: 19,
 }).addTo(map);
 
 // ── Shared state ──────────────────────────────────────────────
