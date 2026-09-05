@@ -2,6 +2,8 @@
 
 PhotoMap turns folders of geotagged travel photos into an interactive static map and gallery. It extracts EXIF/GPS metadata, optionally reverse-geocodes locations, generates thumbnails and resized images, and produces a deployable static site with no application server required.
 
+**Live demo:** [Granada 2026](http://www.freya-gnam.de/photomap/)
+
 The project is designed for a simple workflow: organise photos by trip, run one build command, and publish the generated `dist/` directory to any static host.
 
 ## What it does
@@ -153,7 +155,7 @@ FTP_PASSWORD=secret python3 build.py \
 
 ## Project status
 
-PhotoMap is a finished personal tool and is maintained conservatively. The repository is public primarily as a reusable utility and portfolio project; new work is tracked through GitHub issues when a real need appears.
+PhotoMap is a finished personal tool with a published Granada 2026 live demo and is maintained conservatively. The repository is public primarily as a reusable utility and portfolio project; new work is tracked through GitHub issues when a real need appears.
 
 ## License
 
