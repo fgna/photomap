@@ -7,6 +7,7 @@ The project is designed for a simple workflow: organise photos by trip, run one 
 ## What it does
 
 - interactive Leaflet map with marker clustering;
+- OpenStreetMap raster basemap with no application API key required;
 - trip-based grouping and filtering;
 - virtualised sidebar suitable for large photo collections;
 - keyboard-navigable lightbox with thumbnail strip;
@@ -106,6 +107,7 @@ python3 build.py [options]
   --output PATH       Output directory                (default: ./dist)
   --title TEXT        Site title                      (default: "Photo Map")
   --no-geocode        Skip Nominatim reverse geocoding
+  --retry-geocode     Retry previously failed geocoding results
   --force-thumbs      Regenerate all thumbnails
   --cache PATH        EXIF + geocoding cache          (default: ./build-cache.json)
   --assets PATH       Directory with style.css/app.js (default: ./assets)
@@ -117,8 +119,17 @@ GPS coordinates can be reverse-geocoded at build time using OpenStreetMap Nomina
 
 - requests are rate-limited to one per second;
 - successful results are cached in `build-cache.json`;
-- failed lookups are retried after 24 hours;
+- failed lookups are normally retried after 24 hours;
+- `--retry-geocode` immediately retries only previously failed lookups while preserving successful cached names;
+- retrying geocoding does not force thumbnail or resized-image regeneration;
+- the build summary reports how many GPS photos have named vs unresolved locations;
 - `--no-geocode` disables network geocoding entirely.
+
+Example:
+
+```bash
+python3 build.py --title "Granada 2026" --retry-geocode
+```
 
 When publishing a generated site, remember that geotagged photos can reveal precise travel locations. Review the photos and location data you intend to make public.
 
